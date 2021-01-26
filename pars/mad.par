@@ -40,6 +40,8 @@ add_jcon = true
 <torus>
 rin = 20.0
 rmax = 41.0
+
+<perturbation>
 u_jitter = 0.1
 
 <b_field>

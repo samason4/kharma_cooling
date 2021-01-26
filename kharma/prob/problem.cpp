@@ -46,6 +46,7 @@
 #include "explosion.hpp"
 #include "fm_torus.hpp"
 #include "iharm_restart.hpp"
+#include "kelvin_helmholtz.hpp"
 #include "mhdmodes.hpp"
 #include "orszag_tang.hpp"
 #include "seed_B.hpp"
@@ -74,8 +75,17 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
         if(tf > 0.) pin->SetReal("parthenon/time", "tlim", tf);
 
     } else if (prob == "orszag_tang") {
+        Real tscale = pin->GetOrAddReal("orszag_tang", "tscale", 0.01);
         InitializeOrszagTang(pmb, G, P);
 
+    } else if (prob == "explosion") {
+        Real Bx = pin->GetOrAddReal("explosion", "Bx", 0.01);
+        InitializeExplosion(pmb, G, P, Bx);
+    
+    } else if (prob == "kelvin_helmholtz") {
+        Real tscale = pin->GetOrAddReal("kelvin_helmholtz", "tscale", 0.01);
+        InitializeKelvinHelmholtz(pmb, G, P, tscale);
+    
     } else if (prob == "bondi") {
         Real mdot = pin->GetOrAddReal("bondi", "mdot", 1.0);
         Real rs = pin->GetOrAddReal("bondi", "rs", 8.0);
@@ -87,10 +97,6 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
 
         InitializeBondi(pmb, G, P, eos, mdot, rs);
 
-    } else if (prob == "explosion") {
-        Real Bx = pin->GetOrAddReal("explosion", "Bx", 0.01);
-        InitializeExplosion(pmb, G, P, Bx);
-    
     } else if (prob == "torus") {
         Real rin = pin->GetOrAddReal("torus", "rin", 6.0);
         Real rmax = pin->GetOrAddReal("torus", "rmax", 12.0);
@@ -107,8 +113,8 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
     }
 
     // TODO namespace this outside "torus," it could be added to anything
-    Real u_jitter = pin->GetOrAddReal("torus", "u_jitter", 0.0);
-    int rng_seed = pin->GetOrAddInteger("torus", "rng_seed", 31337);
+    Real u_jitter = pin->GetOrAddReal("perturbation", "u_jitter", 0.0);
+    int rng_seed = pin->GetOrAddInteger("perturbation", "rng_seed", 31337);
     if (u_jitter > 0.0) {
         FLAG("Applying U perturbation");
         PerturbU(pmb, P, u_jitter, rng_seed + pmb->gid);

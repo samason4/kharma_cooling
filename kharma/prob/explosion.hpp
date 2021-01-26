@@ -51,11 +51,11 @@ using namespace parthenon;
  */
 void InitializeExplosion(MeshBlock *pmb, GRCoordinates G, GridVars P, Real Bx)
 {
-    Real gamma = 4./3;
-    Real u_out = 3.e-5 / (gamma-1);
+    Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
+    Real u_out = 3.e-5 / (gam-1);
     Real rho_out = 1.e-4;
 
-    Real u_in = 1.0 / (gamma-1);
+    Real u_in = 1.0 / (gam-1);
     Real rho_in = 1.e-2;
 
     // One buffer zone of linear decline, r_in -> r_out
@@ -98,12 +98,6 @@ void InitializeExplosion(MeshBlock *pmb, GRCoordinates G, GridVars P, Real Bx)
             }
 
             P(prims::B1, k, j, i) = Bx;
-
-            P(prims::u1, k, j, i) = 0.;
-            P(prims::u2, k, j, i) = 0.;
-            P(prims::u3, k, j, i) = 0.;
-            P(prims::B2, k, j, i) = 0.;
-            P(prims::B3, k, j, i) = 0.;
         }
     );
 }

@@ -36,6 +36,9 @@
 
 #include <parthenon/parthenon.hpp>
 #include <interface/update.hpp>
+#include <refinement/refinement.hpp>
+
+#include "harm.hpp"
 
 #include "decs.hpp"
 
@@ -46,9 +49,6 @@
 #include "fixup.hpp"
 #include "fluxes.hpp"
 #include "grmhd.hpp"
-#include "harm.hpp"
-
-#include "iharm_restart.hpp"
 
 TaskCollection HARMDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
 {
@@ -248,11 +248,11 @@ TaskCollection HARMDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
                 auto t_current = tl.AddTask(t_step_done, CalculateCurrent, preserve.get(), sc1.get(), tm.dt);
             }
 
-            // Update refinement.  For much, much later
-            // if (pmesh->adaptive) {
-            //     auto tag_refine = tl.AddTask(
-            //         t_step_done, parthenon::Refinement::Tag<MeshBlockData<Real>>, sc1.get());
-            // }
+            // Update refinement
+            if (pmesh->adaptive) {
+                auto tag_refine = tl.AddTask(
+                    t_step_done, Refinement::Tag<MeshBlockData<Real>>, sc1.get());
+            }
         }
     }
 
