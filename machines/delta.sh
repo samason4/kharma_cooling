@@ -13,35 +13,42 @@ then
   HOST_ARCH=ZEN3
   DEVICE_ARCH=AMPERE80
   MPI_EXE=mpirun
+  NPROC=64
 
   module purge
+  module load cmake
 
   if [[ $ARGS == *"cuda"* ]]
   then
     # GPU Compile
-    # 4-device MPI
-    MPI_EXTRA_ARGS="--map-by ppr:4:node:pe=16"
-    MPI_NUM_PROCS=4
+    # 4-device MPI w/mapping, should play nice with different numbers
+    MPI_NUM_PROCS=${MPI_NUM_PROCS:-4}
+    MPI_EXTRA_ARGS="--map-by ppr:$MPI_NUM_PROCS:node:pe=16"
 
-    # Load common GPU modules
-    module load modtree/gpu hdf5 cmake
+    if [[ "$ARGS" == *"hostside"* ]]; then
+      # Device-side buffers are broken on some Nvidia machines
+      EXTRA_FLAGS="-DPARTHENON_ENABLE_HOST_COMM_BUFFERS=ON $EXTRA_FLAGS"
+    fi
 
-    if [[ $ARGS == *"latest"* ]]; then
-      # nvhpc only on request, MPI crashes
-      module load nvhpc_latest openmpi-5.0_beta
-      C_NATIVE=nvc
-      CXX_NATIVE=nvc++
-    elif [[ $ARGS == *"gcc"* ]]; then
+    if [[ $ARGS == *"gcc"* ]]; then
+      module load gcc/11.4.0 cuda/11.8.0 openmpi/4.1.5+cuda
       C_NATIVE=gcc
       CXX_NATIVE=g++
+    elif [[ $ARGS == *"cray"* ]]; then
+      module load PrgEnv-gnu cuda craype-x86-milan craype-accel-ncsa
+      export MPICH_GPU_SUPPORT_ENABLED=1
+      export MPICH_GPU_MANAGED_MEMORY_SUPPORT_ENABLED=1
+      C_NATIVE=cc
+      CXX_NATIVE=CC
     else
-      module load nvhpc
-      #C_NATIVE=nvc
-      #CXX_NATIVE=nvc++
+      # Default to gcc since we know that works
+      module load gcc/11.4.0 cuda/11.8.0 openmpi/4.1.5+cuda
+      C_NATIVE=gcc
+      CXX_NATIVE=g++
     fi
   else
     # CPU Compile
-    module load modtree/cpu gcc hdf5 cmake
+    module load modtree/cpu gcc
     MPI_NUM_PROCS=1
   fi
 fi

@@ -1,3 +1,7 @@
+# Memory dumps
+core*
+*.swp
+
 # Various script results/logs
 out-*.txt
 *.json
@@ -6,7 +10,6 @@ convergence.txt
 *.png
 *.mp4
 *.webm
-core.*
 frames_*/
 logs/
 *.log
@@ -21,6 +24,7 @@ kharma_parsed_*.par
 log_*.txt
 bondi_analytic_*.txt
 atmosphere_soln_*.txt
+shock_soln_*.txt
 
 # Editor documents
 .project
@@ -39,6 +43,8 @@ external/hdf5*
 *.d
 make_args
 
+# Mac trash
+.DS_Store
 
 # Compiled Object files
 *.slo
@@ -77,6 +83,3 @@ make_args
 # Python files
 __pycache__/
 *.pyc
-
-# added by Hyerin
-*.swp

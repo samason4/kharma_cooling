@@ -29,25 +29,27 @@
 # Set in environment or override in machine file
 NPROC=${NPROC:-8}
 
-### Load machine-specific configurations ###
+### Load basic stuff ###
 HOST=$(hostname -f)
 if [ -z $HOST ]; then
   HOST=$(hostname)
 fi
 ARGS="$*"
 SOURCE_DIR=$(dirname "$(readlink -f "$0")")
-for machine in machines/*.sh
-do
-  source $machine
-done
 
-# If we haven't special-cased already, guess an architecture
-# This only works with newer Kokkos, it's always best to
-# specify HOST_ARCH in a machine file once you know it.
-if [[ -z "$HOST_ARCH" ]]; then
-  HOST_ARCH="NATIVE"
+# A machine config in .config overrides our defaults
+if [ -f $HOME/.config/kharma.sh ]; then
+  source $HOME/.config/kharma.sh
+else
+  for machine in $SOURCE_DIR/machines/*.sh
+  do
+    source $machine
+  done
 fi
-EXTRA_FLAGS="-DKokkos_ARCH_${HOST_ARCH}=ON $EXTRA_FLAGS"
+
+# Default to compiling for the host architecture
+# Always better to specify, though, for cross-compile/older Kokkos support
+EXTRA_FLAGS="-DKokkos_ARCH_${HOST_ARCH:-NATIVE}=ON $EXTRA_FLAGS"
 
 # Kokkos does *not* support compiling for multiple devices!
 # But if they ever do, you can separate a list of DEVICE_ARCH
@@ -73,11 +75,10 @@ fi
 
 ### Enivoronment Prep ###
 if [[ "$(which python3 2>/dev/null)" == *"conda"* ]]; then
-  echo
   echo "make.sh note:"
   echo "It looks like you have Anaconda loaded."
-  echo "Anaconda loads a serial version of HDF5 which may make this compile impossible."
-  echo "If you run into trouble, deactivate your environment with 'conda deactivate'"
+  echo "This is usually okay, but double-check the line 'Found MPI_CXX:' below!"
+  echo
 fi
 # Save arguments if we've changed them
 # Used in run.sh for loading the same modules/etc.
@@ -104,8 +105,9 @@ if [[ -z "$CXX_NATIVE" ]]; then
   if which CC >/dev/null 2>&1; then
     CXX_NATIVE=CC
     C_NATIVE=cc
-    # In case this isn't Cray, use the more common flag
-    #OMP_FLAG="-fopenomp"
+    # Don't set an OMP flag to use
+    # This could call through to any compiler, & sometimes (Frontier)
+    # we want no OpenMP at all
   # Prefer Intel oneAPI compiler over legacy, both over generic
   elif which icpx >/dev/null 2>&1; then
     CXX_NATIVE=icpx
@@ -172,10 +174,6 @@ elif [[ "$ARGS" == *"cuda"* ]]; then
     echo "Dry-running the nvcc wrapper with $CXXFLAGS"
   fi
   export NVCC_WRAPPER_DEFAULT_COMPILER="$CXX_NATIVE"
-  # Generally Kokkos sets this, so we don't need to
-  #export CXXFLAGS="--expt-relaxed-constexpr $CXXFLAGS"
-  # New NVHPC complains if we don't set this
-  export NVHPC_CUDA_HOME=$CUDA_HOME
   OUTER_LAYOUT="MANUAL1D_LOOP"
   INNER_LAYOUT="TVR_INNER_LOOP"
   ENABLE_OPENMP="ON"
@@ -218,9 +216,10 @@ fi
 
 ### Build HDF5 ###
 # If we're building HDF5, do it after we set *all flags*
-if [[ "$ARGS" == *"hdf5"* && "$ARGS" == *"clean"* ]]; then
+if [[ "$ARGS" == *"hdf5"* && "$ARGS" == *"clean"* && "$ARGS" != *"dryrun"* ]]; then
   H5VER=1.14.2
   H5VERU=1_14_2
+
   cd external
   # Allow complete reconfigure (for switching compilers, takes longer)
   if [[ "$ARGS" == *"cleanhdf5"* ]]; then
@@ -240,18 +239,17 @@ if [[ "$ARGS" == *"hdf5"* && "$ARGS" == *"clean"* ]]; then
     HDF_CC=$C_NATIVE
     HDF_EXTRA=""
   else
-    if [[ "$ARGS" == *"icc"* ]]; then
+    if [[ "$C_NATIVE" == *"icx"* ]]; then
+      HDF_CC=mpiicx
+    elif [[ "$C_NATIVE" == *"icc"* ]]; then
       HDF_CC=mpiicc
-      HDF_EXTRA="--enable-parallel"
-    else
+    elif [[ "$C_NATIVE" == "cc" ]]; then
       # Cray wrappers include MPI
-      if [[ "$C_NATIVE" == "cc" ]]; then
-        HDF_CC=cc
-      else
-        HDF_CC=mpicc
-      fi
-      HDF_EXTRA="--enable-parallel"
+      HDF_CC=cc
+    else
+      HDF_CC=mpicc
     fi
+    HDF_EXTRA="--enable-parallel"
   fi
 
   echo Configuring HDF5...
@@ -283,6 +281,12 @@ fi
 # delete the build directory
 if [[ "$ARGS" == *"clean"* ]]; then
 
+  # Should do this manually when compiling on backend nodes!
+  if [ ! -f external/parthenon/CMakeLists.txt ]; then
+    git submodule update --recursive --init
+  fi
+
+  # Patch parthenon to use KHARMA's coordinates, anything incidental
   cd external/parthenon
   if [[ $(( $(git --version | cut -d '.' -f 2) > 35 )) == "1" ]]; then
     git apply --quiet ../patches/parthenon-*.patch
@@ -291,6 +295,23 @@ if [[ "$ARGS" == *"clean"* ]]; then
     git apply ../patches/parthenon-*.patch
   fi
   cd -
+
+  # HIP requires device-capable variant functions
+  if [[ "$ARGS" == *"hip"* ]]; then
+    cd external/variant
+    if [[ $(( $(git --version | cut -d '.' -f 2) > 35 )) == "1" ]]; then
+      git apply --quiet ../patches/variant-hip.patch
+    else
+      git apply ../patches/variant-hip.patch
+    fi
+    cd -
+
+    # HIP also prefers new Kokkos.
+    # TODO work something out if on HIP machines w/o internet
+    cd external/parthenon
+    git submodule update --remote external/Kokkos
+    cd -
+  fi
 
   rm -rf build
 fi
@@ -314,7 +335,7 @@ if [[ "$ARGS" == *"clean"* ]]; then
     -DKokkos_ENABLE_CUDA=$ENABLE_CUDA \
     -DKokkos_ENABLE_SYCL=$ENABLE_SYCL \
     -DKokkos_ENABLE_HIP=$ENABLE_HIP \
-    "$EXTRA_FLAGS"
+    $EXTRA_FLAGS
 
   if [[ "$ARGS" == *"dryrun"* ]]; then
     set +x

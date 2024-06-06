@@ -44,13 +44,13 @@
  * 
  * This physics package implements B field transport with Flux-CT (Toth 2000)
  *
- * This requires only the values at cell centers
+ * This requires only the magnetic field value at cell centers
  * 
  * This implementation includes conversion from "primitive" to "conserved" B and back
  */
 namespace B_FluxCT {
 /**
- * Declare fields, initialize (few) parameters
+ * Declare fields, initialize parameters
  */
 std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<Packages_t>& packages);
 
@@ -64,7 +64,7 @@ std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<P
  * output: Primitive B = B^i
  */
 TaskStatus BlockUtoP(MeshBlockData<Real> *md, IndexDomain domain, bool coarse=false);
-void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse=false);
+TaskStatus MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse=false);
 
 /**
  * Reverse of the above.  Only used alone during initialization.
@@ -74,18 +74,26 @@ void BlockPtoU(MeshBlockData<Real> *md, IndexDomain domain, bool coarse=false);
 void MeshPtoU(MeshData<Real> *md, IndexDomain domain, bool coarse=false);
 
 /**
- * All flux corrections required by this package
+ * Apply all flux corrections required by this package to ensure small divB
  */
 void FixFlux(MeshData<Real> *md);
+
 /**
  * Modify the B field fluxes to take a constrained-transport step as in Toth (2000)
  */
 void FluxCT(MeshData<Real> *md);
+
 /**
  * Modify the B field fluxes just beyond the polar (or radial) boundary so as to
  * ensure no flux through the boundary after applying FluxCT
  */
-void FixBoundaryFlux(MeshData<Real> *md, IndexDomain domain, bool coarse);
+void ZeroBoundaryFlux(MeshData<Real> *md, IndexDomain domain, bool coarse);
+
+/**
+ * Modify the B field fluxes just beyond the radial (or polar) boundary so as to
+ * ensure the magnetic divergence is zero, even 
+ */
+void Bflux0(MeshData<Real> *md, IndexDomain domain, bool coarse);
 
 /**
  * Alternate B field fix for X1 boundary, keeps zero divergence while permitting flux
@@ -146,7 +154,7 @@ inline Real ReducePhi5(MeshData<Real> *md)
  * TODO likely better templated, as with all ND stuff
  */
 template<typename Global>
-KOKKOS_INLINE_FUNCTION double corner_div(const GRCoordinates& G, const Global& B_U, const int& b,
+KOKKOS_FORCEINLINE_FUNCTION double corner_div(const GRCoordinates& G, const Global& B_U, const int& b,
                                          const int& k, const int& j, const int& i, const bool& do_3D)
 {
     const double norm = (do_3D) ? 0.25 : 0.5;
@@ -170,7 +178,7 @@ KOKKOS_INLINE_FUNCTION double corner_div(const GRCoordinates& G, const Global& B
     return norm*term1/G.Dxc<1>(i) + norm*term2/G.Dxc<2>(j) + norm*term3/G.Dxc<3>(k);
 }
 template<typename Global>
-KOKKOS_INLINE_FUNCTION double corner_div(const GRCoordinates& G, const Global& P, const VarMap& m_p, 
+KOKKOS_FORCEINLINE_FUNCTION double corner_div(const GRCoordinates& G, const Global& P, const VarMap& m_p, 
                                          const int& b, const int& k, const int& j, const int& i,
                                          const bool& do_3D)
 {
@@ -200,7 +208,7 @@ KOKKOS_INLINE_FUNCTION double corner_div(const GRCoordinates& G, const Global& P
  * Note this is forward-difference, while previous def is backward
  */
 template<typename Global>
-KOKKOS_INLINE_FUNCTION void center_grad(const GRCoordinates& G, const Global& P, const int& b,
+KOKKOS_FORCEINLINE_FUNCTION void center_grad(const GRCoordinates& G, const Global& P, const int& b,
                                           const int& k, const int& j, const int& i, const bool& do_3D,
                                           double& B1, double& B2, double& B3)
 {
@@ -227,7 +235,7 @@ KOKKOS_INLINE_FUNCTION void center_grad(const GRCoordinates& G, const Global& P,
     B3 = norm*term3/G.Dxc<3>(k);
 }
 
-KOKKOS_INLINE_FUNCTION void averaged_curl_3D(const GRCoordinates& G, const GridVector& A, const GridVector& B_U,
+KOKKOS_FORCEINLINE_FUNCTION void averaged_curl_3D(const GRCoordinates& G, const GridVector& A, const GridVector& B_U,
                                              const int& k, const int& j, const int& i)
 {
     // Take a flux-ct step from the corner potentials.
@@ -270,7 +278,7 @@ KOKKOS_INLINE_FUNCTION void averaged_curl_3D(const GRCoordinates& G, const GridV
     B_U(V3, k, j, i) = (A2c1f - A2c1b) / G.Dxc<1>(i) - (A1c2f - A1c2b) / G.Dxc<2>(j);
 }
 
-KOKKOS_INLINE_FUNCTION void averaged_curl_2D(const GRCoordinates& G, const GridVector& A, const GridVector& B_U,
+KOKKOS_FORCEINLINE_FUNCTION void averaged_curl_2D(const GRCoordinates& G, const GridVector& A, const GridVector& B_U,
                                              const int& k, const int& j, const int& i)
 {
     // A3,2 derivative

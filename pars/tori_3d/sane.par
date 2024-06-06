@@ -20,7 +20,7 @@ nx3 = 1
 <coordinates>
 base = spherical_ks
 transform = fmks
-r_out = 1000
+r_out = 100
 a = 0.9375
 hslope = 0.3
 mks_smooth = 0.5
