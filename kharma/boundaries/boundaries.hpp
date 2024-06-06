@@ -39,6 +39,7 @@
 #include "dirichlet.hpp"
 #include "flux.hpp"
 #include "grmhd_functions.hpp"
+#include "one_block_transmit.hpp"
 
 /**
  * This package has any functions related to KHARMA's treatment of "domain" boundary conditions:
@@ -83,11 +84,6 @@ TaskStatus FixFlux(MeshData<Real> *rc);
  * reset the velocity of such material so it is no longer inflowing.
  */
 void CheckInflow(std::shared_ptr<MeshBlockData<Real>> &rc, IndexDomain domain, bool coarse);
-
-/**
- * Correct for geometry when applying primitive B field boundaries
- */
-void CorrectBPrimitive(std::shared_ptr<MeshBlockData<Real>>& rc, IndexDomain domain, bool coarse);
 
 /**
  * Check for velocity toward the simulation domain in a zone, and eliminate it.

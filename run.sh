@@ -33,8 +33,8 @@ elif [ -f $KHARMA_DIR/kharma.hip ]; then
 elif [ -f $KHARMA_DIR/kharma.host ]; then
   EXE_NAME=kharma.host
   # Enable OpenMP to use all threads only where not counterproductive
-  export OMP_PROC_BIND=${OMP_PROC_BIND:-spread}
-  export OMP_PLACES=${OMP_PLACES:-threads}
+  #export OMP_PROC_BIND=${OMP_PROC_BIND:-spread}
+  #export OMP_PLACES=${OMP_PLACES:-threads}
   # Force a number of OpenMP threads if it doesn't autodetect
   #export OMP_NUM_THREADS=${OMP_NUM_THREADS:-28}
 else
@@ -42,24 +42,34 @@ else
   exit
 fi
 
-# Optionally use the Kokkos tools to profile kernels
-#export KOKKOS_TOOLS_LIBS=$KHARMA_DIR/../kokkos-tools/kp_kernel_timer.so
-#export KOKKOS_TOOLS_LIBS=$KHARMA_DIR/../kokkos-tools/kp_nvprof_cnnector.so
-#export KOKKOS_TOOLS_LIBS=$KHARMA_DIR/../kokkos-tools/kp_kernel_logger.so
-
 # Load environment from the same files as the compile process
 HOST=$(hostname -f)
-ARGS=$(cat $KHARMA_DIR/make_args)
+ARGS=${ARGS:-$(cat $KHARMA_DIR/make_args)}
 SOURCE_DIR=$(dirname "$(readlink -f "$0")")
-for machine in $KHARMA_DIR/machines/*.sh
-do
-  source $machine
-done
+
+# A machine config in .config overrides our defaults
+if [ -f $HOME/.config/kharma.sh ]; then
+  source $HOME/.config/kharma.sh
+else
+  for machine in $SOURCE_DIR/machines/*.sh
+  do
+    source $machine
+  done
+fi
 
 if [[ "$1" == "trace" ]]; then
   export KOKKOS_TOOLS_LIBS=$KHARMA_DIR/../kokkos-tools/kp_kernel_logger.so
   shift
 fi
+if [[ "$1" == "prof" ]]; then
+  export KOKKOS_TOOLS_LIBS=$KHARMA_DIR/../kokkos-tools/kp_kernel_timer.so
+  shift
+fi
+if [[ "$1" == "nvprof" ]]; then
+  export KOKKOS_TOOLS_LIBS=$KHARMA_DIR/../kokkos-tools/kp_nvprof_connector.so
+  shift
+fi
+
 # Override MPI_NUM_PROCS at user option "-n"
 # and OMP_NUM_THREADS at option "-nt"
 if [[ "$1" == "-n" ]]; then

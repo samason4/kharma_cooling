@@ -34,108 +34,76 @@
 
 #include "dirichlet.hpp"
 
+#include "domain.hpp"
 #include "types.hpp"
 
 #include <parthenon/parthenon.hpp>
 
 using namespace parthenon;
 
-// TODO can SetDirichlet be folded into this?
-void KBoundaries::DirichletImpl(std::shared_ptr<MeshBlockData<Real>> &rc, BoundaryFace bface, bool coarse)
+void KBoundaries::DirichletImpl(MeshBlockData<Real> *rc, BoundaryFace bface, bool coarse, bool set)
 {
-    std::shared_ptr<MeshBlock> pmb = rc->GetBlockPointer();
-    const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
-
-    // Get all ghosts, minus those in the B_Cleanup package if it is present
+    // Get all cell-centered ghosts, minus anything just used at startup
     using FC = Metadata::FlagCollection;
     FC ghost_vars = FC({Metadata::FillGhost, Metadata::Conserved})
                   + FC({Metadata::FillGhost, Metadata::GetUserFlag("Primitive")})
                   - FC({Metadata::GetUserFlag("StartupOnly")});
-    PackIndexMap ghostmap;
-    auto q = rc->PackVariables(ghost_vars, ghostmap, coarse);
-    auto bound = rc->Get("bounds." + BoundaryName(bface)).data;
+    auto q = rc->PackVariables(ghost_vars, coarse);
+    auto bound = rc->PackVariables(std::vector<std::string>{"Boundaries." + BoundaryName(bface)});
+    DirichletSetFromField(rc, q, bound, bface, coarse, set, false);
 
-    // We're sometimes called without any variables to sync (e.g. syncing flags, EMFs), just return
-    if (q.GetDim(4) == 0) return;
-
-    if (q.GetDim(4) != bound.GetDim(4)) {
-        std::cerr << "Dirichlet boundary mismatch! Boundary cache: " << bound.GetDim(4) << " for pack: " << q.GetDim(4) << std::endl;
-        std::cerr << "Variables with ghost zones:" << std::endl;
-        ghostmap.print();
-    }
-
-    const IndexRange vars = IndexRange{0, q.GetDim(4) - 1};
-    const bool right = !BoundaryIsInner(bface);
-
-    // Subtract off the starting index if we're on the right
-    const auto bounds = coarse ? pmb->c_cellbounds : pmb->cellbounds;
-    const int dir = BoundaryDirection(bface);
-    const int ie = (dir == 1) ? bounds.ie(IndexDomain::interior) + 1 : 0;
-    const int je = (dir == 2) ? bounds.je(IndexDomain::interior) + 1 : 0;
-    const int ke = (dir == 3) ? bounds.ke(IndexDomain::interior) + 1 : 0;
-
-    const auto &G = pmb->coords;
-
-    // const int q_index = ghostmap["prims.q"].first;
-    const auto domain = BoundaryDomain(bface);
-    pmb->par_for_bndry(
-        "dirichlet_boundary", vars, domain, CC, coarse,
-        KOKKOS_LAMBDA(const int &p, const int &k, const int &j, const int &i) {
-            if (right) {
-                q(p, k, j, i) = bound(p, k - ke, j - je, i - ie);
-            } else {
-                q(p, k, j, i) = bound(p, k, j, i);
-            }
-            // if (p == q_index) printf("%g ", q(p, k, j, i));
-        }
-    );
+    FC ghost_vars_f = FC({Metadata::FillGhost, Metadata::Face})
+                  - FC({Metadata::GetUserFlag("StartupOnly")});
+    auto q_f = rc->PackVariables(ghost_vars_f, coarse);
+    auto bound_f = rc->PackVariables(std::vector<std::string>{"Boundaries.f." + BoundaryName(bface)});
+    DirichletSetFromField(rc, q_f, bound_f, bface, coarse, set, true);
 }
 
-void KBoundaries::SetDomainDirichlet(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
+void KBoundaries::DirichletSetFromField(MeshBlockData<Real> *rc, VariablePack<Real> &q, VariablePack<Real> &bound,
+                                        BoundaryFace bface, bool coarse, bool set, bool do_face)
 {
-    std::shared_ptr<MeshBlock> pmb = rc->GetBlockPointer();
-    const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
-    const BoundaryFace bface = BoundaryFaceOf(domain);
-
-    using FC = Metadata::FlagCollection;
-    FC ghost_vars = FC({Metadata::FillGhost, Metadata::Conserved}) + FC({Metadata::FillGhost, Metadata::GetUserFlag("Primitive")});
-    FC main_ghosts = ghost_vars - FC({Metadata::GetUserFlag("StartupOnly")});
-    PackIndexMap ghostmap;
-    auto q = rc->PackVariables(main_ghosts, ghostmap, coarse);
-    const int q_index = ghostmap["prims.q"].first;
-    auto bound = rc->Get("bounds." + BoundaryName(bface)).data;
-
     // We're sometimes called without any variables to sync (e.g. syncing flags, EMFs), just return
     if (q.GetDim(4) == 0) return;
-
     if (q.GetDim(4) != bound.GetDim(4)) {
         std::cerr << "Dirichlet boundary mismatch! Boundary cache: " << bound.GetDim(4) << " for pack: " << q.GetDim(4) << std::endl;
-        std::cerr << "Variables with ghost zones:" << std::endl;
-        ghostmap.print();
     }
 
-    const IndexRange vars = IndexRange{0, q.GetDim(4) - 1};
-    const bool right = !BoundaryIsInner(domain);
-
-    // Subtract off the starting index if we're on the right
-    const auto bounds = coarse ? pmb->c_cellbounds : pmb->cellbounds;
+    // Indices
+    auto pmb = rc->GetBlockPointer();
+    const bool binner = BoundaryIsInner(bface);
     const int dir = BoundaryDirection(bface);
-    const int ie = (dir == 1) ? bounds.ie(IndexDomain::interior) + 1 : 0;
-    const int je = (dir == 2) ? bounds.je(IndexDomain::interior) + 1 : 0;
-    const int ke = (dir == 3) ? bounds.ke(IndexDomain::interior) + 1 : 0;
+    const auto domain = BoundaryDomain(bface);
+    const auto bname = BoundaryName(bface);
 
-    const auto &G = pmb->coords;
-
-    pmb->par_for_bndry(
-        "dirichlet_boundary", vars, domain, CC, coarse,
-        KOKKOS_LAMBDA(const int &p, const int &k, const int &j, const int &i) {
-            if (right) {
-                bound(p, k - ke, j - je, i - ie) = q(p, k, j, i);
-            } else {
-                bound(p, k, j, i) = q(p, k, j, i);
-            }
+    std::vector<TopologicalElement> el_list;
+    if (do_face) {
+        el_list = {F1, F2, F3};
+    } else {
+        el_list = {CC};
+    }
+    int el_tot = el_list.size();
+    for (auto el : el_list) {
+        // This is the domain of the boundary/ghost zones
+        IndexRange3 b;
+        if ((el == F1 && dir == 1) || (el == F2 && dir == 2) || (el == F3 && dir == 3)) {
+            // Extend domain by 1 to set domain face values
+            b = KDomain::GetRange(rc, domain, el, (binner) ? 0 : -1, (binner) ? 1 : 0, coarse);
+        } else {
+            b = KDomain::GetRange(rc, domain, el, coarse);
         }
-    );
+
+        // Flatten TopologicalElements when reading/writing to boundaries cache
+        pmb->par_for(
+            "dirichlet_boundary_" + bname, 0, q.GetDim(4)/el_tot-1, b.ks, b.ke, b.js, b.je, b.is, b.ie,
+            KOKKOS_LAMBDA (const int &v, const int &k, const int &j, const int &i) {
+                if (set) {
+                    bound(el_tot*v + (static_cast<int>(el) % el_tot), k - b.ks, j - b.js, i - b.is) = q(el, v, k, j, i);
+                } else {
+                    q(el, v, k, j, i) = bound(el_tot*v + (static_cast<int>(el) % el_tot), k - b.ks, j - b.js, i - b.is);
+                }
+            }
+        );
+    }
 }
 
 void KBoundaries::FreezeDirichlet(std::shared_ptr<MeshData<Real>> &md)
@@ -151,7 +119,7 @@ void KBoundaries::FreezeDirichlet(std::shared_ptr<MeshData<Real>> &md)
             // ...on all blocks...
             for (int i=0; i < md->NumBlocks(); i++) {
                 auto rc = md->GetBlockData(i).get();
-                std::shared_ptr<MeshBlock> pmb = rc->GetBlockPointer();
+                auto pmb = rc->GetBlockPointer();
                 auto domain = BoundaryDomain(bface);
                 // Set whatever is in that domain as the Dirichlet bound
                 SetDomainDirichlet(rc, domain, false);

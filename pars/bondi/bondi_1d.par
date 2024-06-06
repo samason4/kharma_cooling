@@ -81,7 +81,7 @@ init_to_fel_0 = false
 type = none
 solver = none
 # To add magnetic field
-#type = monopole
+#type = monopole_cube
 #B10 = 1
 # Or
 #type = vertical

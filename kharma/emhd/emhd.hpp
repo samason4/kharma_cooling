@@ -95,7 +95,7 @@ std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<P
  * Add EGRMHD explicit source terms: anything which can be calculated once
  * and added to the general dU/dt term along with e.g. GRMHD source, wind, etc
  */
-TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt);
+TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt, IndexDomain domain);
 
 /**
  * Set q and dP to sensible starting values if they are not initialized by the problem.
@@ -110,6 +110,7 @@ void InitEMHDVariables(std::shared_ptr<MeshBlockData<Real>>& rc, ParameterInput 
  * only on boundaries in order to sync the primitive/conserved variables specifically.
  */
 void BlockUtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse);
+void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse=false);
 void BlockPtoU(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse);
 
 /**
@@ -130,7 +131,7 @@ inline EMHD_parameters GetEMHDParameters(Packages_t& packages)
  * Add EGRMHD explicit source terms: anything which can be calculated once
  * and added to the general dU/dt term along with e.g. GRMHD source, wind, etc
  */
-TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt);
+TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt, IndexDomain domain);
 
 /**
  * Set q and dP to sensible starting values if they are not initialized by the problem.
@@ -215,9 +216,9 @@ KOKKOS_INLINE_FUNCTION void set_parameters(const GRCoordinates& G, const Real& r
         const Real Theta = pg / rho;
         // Compute local sound speed, ensure it is defined and >0
         // Passing NaN disables an upper bound (TODO should we have one?)
-        const Real cs2    = clip(gam * pg / (rho + (gam * u)), SMALL, 0./0.);
+        const Real cs2 = clip(gam * pg / (rho + (gam * u)), SMALL, 0./0.);
 
-        constexpr Real lambda    = 0.01;
+        constexpr Real lambda = 0.01;
 
         // Correction due to heat conduction
         if (emhd_params.conduction) {
@@ -244,7 +245,7 @@ KOKKOS_INLINE_FUNCTION void set_parameters(const GRCoordinates& G, const Real& r
                               : m::max(-bsq, -2.99 * pg / 1.07);
 
             const Real dP_ratio = m::abs(dP) / (m::abs(dP_max) + SMALL);
-            const Real inv_exp_g = m::exp((1. - dP_comp_ratio) / lambda);
+            const Real inv_exp_g = m::exp((1. - dP_ratio) / lambda);
             const Real f_fmin    = inv_exp_g / (inv_exp_g + 1.) + 1.e-5;
 
             tau = m::min(tau, f_fmin * tau_dyn);
