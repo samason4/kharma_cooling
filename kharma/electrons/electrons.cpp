@@ -757,6 +757,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
     const VarMap m_p2(prims_map, false), m_u2(cons_map, true);
     //printf("kel at (5,5) after corrector cooling: %.16f\n", P2(m_p2.K_HOWES, 0, 54, 54));
     Electrons::BlockPtoU(rc, IndexDomain::entire, false);
+    return TaskStatus::complete;
 }
 
 // these are functions that are used to print stuff from the driver

@@ -38,6 +38,8 @@
 #include "floors.hpp"
 #include "flux_functions.hpp"
 
+#define STRLEN 2048
+
 void AddBondiParameters(ParameterInput *pin, Packages_t &packages)
 {
     const Real mdot = pin->GetOrAddReal("bondi", "mdot", 1.0);
@@ -76,9 +78,9 @@ void AddBondiParameters(ParameterInput *pin, Packages_t &packages)
         packages.Get("GRMHD")->AddParam<Real>("fill_interior_bondi", fill_interior);
     if(! packages.Get("GRMHD")->AllParams().hasKey("zero_velocity_bondi"))
         packages.Get("GRMHD")->AddParam<Real>("zero_velocity_bondi", zero_velocity);
-    if(! pmb->packages.Get("Electrons")->AllParams().hasKey("do_electrons_bondi"))
-        pmb->packages.Get("Electrons")->AddParam<Real>("do_electrons_bondi", do_electrons);
-            if(! packages.Get("GRMHD")->AllParams().hasKey("diffinit_bondi"))
+    if(! packages.Get("Electrons")->AllParams().hasKey("do_electrons_bondi"))
+        packages.Get("Electrons")->AddParam<Real>("do_electrons_bondi", do_electrons);
+    if(! packages.Get("GRMHD")->AllParams().hasKey("diffinit_bondi"))
         packages.Get("GRMHD")->AddParam<Real>("diffinit_bondi", diffinit);
     if(! (packages.Get("GRMHD")->AllParams().hasKey("ur_frac")))
         packages.Get("GRMHD")->AddParam<Real>("ur_frac", ur_frac);

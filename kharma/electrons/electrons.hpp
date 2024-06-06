@@ -134,6 +134,14 @@ TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *rc);
 void FillOutput(MeshBlock *pmb, ParameterInput *pin);
 //COOLING:
 TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc);
+inline TaskStatus MeshApplyElectronCooling(MeshData<Real> *md)
+{
+    Flag("MeshApplyElectronCooling");
+    for (int i=0; i < md->NumBlocks(); ++i)//not sure what this does, I hope it doesn't mess everything up
+        ApplyElectronCooling(md->GetBlockData(i).get());
+    EndFlag();
+    return TaskStatus::complete;
+}
 TaskStatus FindKelCoolingMD(MeshData<Real> *rc);
 TaskStatus FindKelCoolingMBD(MeshBlockData<Real> *rc);
 

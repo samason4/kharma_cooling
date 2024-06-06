@@ -153,14 +153,17 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
             t_start_recv_flux = tl.AddTask(t_none, parthenon::StartReceiveFluxCorrections, md_sub_step_init);
 
         auto t_prim_source_first = t_start_recv_flux;
-        //and then here is the version with MeshBlockData stuff
-        for (int j = 0; j < blocks.size(); j++) {
+        //and then here is the version with MeshBlockData stuff ****** this stuff below that I've commented out was from before I pulled from 
+        /*for (int j = 0; j < blocks.size(); j++) {
             auto &pmb = blocks[j];
             auto &mbd_sub_step_initial = pmb->meshblock_data.Get("base");
             //COOLING:
             if(stage == 1){
-                t_prim_source_first = tl.AddTask(t_start_recv_flux, Packages::BlockApplyPrimSource, mbd_sub_step_initial.get());
+                t_prim_source_first = tl.AddTask(t_start_recv_flux, Packages::MeshApplyPrimSource, mbd_sub_step_initial.get());
             }
+        }*/
+        if(stage == 1){
+            t_prim_source_first = tl.AddTask(t_start_recv_flux, Packages::MeshApplyPrimSource, md_sub_step_init.get());
         }
         
         // Calculate the flux of each variable through each face
@@ -310,13 +313,13 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
         // Apply these only after the final step so they're operator-split
 
         //COOLING:
-        auto t_prim_source_second = t_set_bc;
+        /*auto t_prim_source_second = t_set_bc;
         if (stage == integrator->nstages) {
             t_prim_source_second = tl.AddTask(t_set_bc, Packages::BlockApplyPrimSource, mbd_sub_step_final.get());
-        }
-        // not sure if this cooling stuff ^ should be included in the MeshApplyPrimSource stuff. probably, but
+        }*/
+        // I think this cooling stuff ^ should be included in the MeshApplyPrimSource stuff. probably, but
         // that's something to think about later
-        auto t_prim_source = t_prim_source_second;
+        auto t_prim_source = t_set_bc;
         if (stage == integrator->nstages) {
             t_prim_source = tl.AddTask(t_set_bc, Packages::MeshApplyPrimSource, md_sub_step_final.get());
         }
