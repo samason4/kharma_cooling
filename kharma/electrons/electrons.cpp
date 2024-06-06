@@ -783,7 +783,6 @@ TaskStatus FindKelCoolingMBD(MeshBlockData<Real> *rc){
     return TaskStatus::complete;
 }
 
-} // namespace Electrons
 void ApplyFloors(MeshBlockData<Real> *mbd, IndexDomain domain)
 {
     auto pmb                 = mbd->GetBlockPointer();

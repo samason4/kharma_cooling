@@ -310,14 +310,20 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
         // Apply these only after the final step so they're operator-split
 
         //COOLING:
-        auto t_prim_source_fourth = t_set_bc;
+        auto t_prim_source_second = t_set_bc;
         if (stage == integrator->nstages) {
-            t_prim_source_fourth = tl.AddTask(t_set_bc, Packages::BlockApplyPrimSource, mbd_sub_step_final.get());
+            t_prim_source_second = tl.AddTask(t_set_bc, Packages::BlockApplyPrimSource, mbd_sub_step_final.get());
+        }
+        // not sure if this cooling stuff ^ should be included in the MeshApplyPrimSource stuff. probably, but
+        // that's something to think about later
+        auto t_prim_source = t_prim_source_second;
+        if (stage == integrator->nstages) {
+            t_prim_source = tl.AddTask(t_set_bc, Packages::MeshApplyPrimSource, md_sub_step_final.get());
         }
 
         // Electron heating goes where it does in the KHARMA Driver, for the same reasons
         auto t_heat_electrons = t_prim_source;
-        if (use_electrons) {
+        if (use_heating) {
             t_heat_electrons = tl.AddTask(t_prim_source, Electrons::MeshApplyElectronHeating,
                                           md_sub_step_init.get(), md_sub_step_final.get(), stage == 1);
         }
