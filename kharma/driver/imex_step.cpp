@@ -67,13 +67,16 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
     auto& pkgs         = blocks[0]->packages.AllPackages();
     auto& flux_pkg   = pkgs.at("Flux")->AllParams();
     auto& driver_pkg   = pkgs.at("Driver")->AllParams();
-    //const bool use_electrons = pkgs.count("Electrons");
+    const bool use_electrons = pkgs.count("Electrons");
     //COOLING:
-    const bool use_heating = pkgs.at("Electrons")->Param<bool>("do_heating");
-    const bool use_cooling = pkgs.at("Electrons")->Param<bool>("do_cooling");
+    const bool use_heating = false;
+    const bool use_cooling = false;
+    if(use_electrons){
+        const bool use_heating = pkgs.at("Electrons")->Param<bool>("do_heating");
+        const bool use_cooling = pkgs.at("Electrons")->Param<bool>("do_cooling");
+    }
     const bool use_b_cleanup = pkgs.count("B_Cleanup");
     const bool use_b_ct = pkgs.count("B_CT");
-    const bool use_electrons = pkgs.count("Electrons");
     const bool use_fofc = flux_pkg.Get<bool>("use_fofc");
     const bool use_implicit = pkgs.count("Implicit");
     const bool use_jcon = pkgs.count("Current");
@@ -153,7 +156,7 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
             t_start_recv_flux = tl.AddTask(t_none, parthenon::StartReceiveFluxCorrections, md_sub_step_init);
 
         auto t_prim_source_first = t_start_recv_flux;
-        //and then here is the version with MeshBlockData stuff ****** this stuff below that I've commented out was from before I pulled from 
+        //and then here is the version with MeshBlockData stuff ****** this stuff below that I've commented out was from before imex_step used only mesh data 
         /*for (int j = 0; j < blocks.size(); j++) {
             auto &pmb = blocks[j];
             auto &mbd_sub_step_initial = pmb->meshblock_data.Get("base");
@@ -163,7 +166,9 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
             }
         }*/
         if(stage == 1){
-            t_prim_source_first = tl.AddTask(t_start_recv_flux, Packages::MeshApplyPrimSource, md_sub_step_init.get());
+            if(use_cooling){
+                t_prim_source_first = tl.AddTask(t_start_recv_flux, Packages::MeshApplyPrimSource, md_sub_step_init.get());
+            }
         }
         
         // Calculate the flux of each variable through each face
@@ -321,7 +326,9 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
         // that's something to think about later
         auto t_prim_source = t_set_bc;
         if (stage == integrator->nstages) {
-            t_prim_source = tl.AddTask(t_set_bc, Packages::MeshApplyPrimSource, md_sub_step_final.get());
+            if (use_cooling){
+                t_prim_source = tl.AddTask(t_set_bc, Packages::MeshApplyPrimSource, md_sub_step_final.get());
+            }
         }
 
         // Electron heating goes where it does in the KHARMA Driver, for the same reasons

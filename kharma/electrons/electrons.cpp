@@ -75,7 +75,7 @@ std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<P
     params.Add("enforce_positive_dissipation", enforce_positive_dissipation);
 
     // This is used only in constant model
-    Real fel_const = pin->GetOrAddReal("electrons", "fel_constant", 0.5);//Real fel_const = pin->GetOrAddReal("electrons", "fel_constant", 0.1);
+    Real fel_const = pin->GetOrAddReal("electrons", "fel_constant", 0.1);
     params.Add("fel_constant", fel_const);
 
     // This prevented spurious heating when heat_electrons used pre-floored dissipation
@@ -85,7 +85,7 @@ std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<P
     // Initialization
     bool init_to_fel_0 = pin->GetOrAddBoolean("electrons", "init_to_fel_0", true);
     params.Add("init_to_fel_0", init_to_fel_0);
-    Real fel_0 = pin->GetOrAddReal("electrons", "fel_0", 0.5);//Real fel_0 = pin->GetOrAddReal("electrons", "fel_0", 0.01);
+    Real fel_0 = pin->GetOrAddReal("electrons", "fel_0", 0.01);
     params.Add("fel_0", fel_0);
 
     // Floors
@@ -585,7 +585,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
 
     //for the conversion stuff:
     //MP, ME are defined in the namespace parthenon (above)
-    //M_bh and M_unit are defined in sane.par and electrons.cpp (in the Initialize function and here)
+    //M_bh and M_unit are defined in sane.par or whatever par file you are using
     double CL = 2.99792458e10; // Speed of light
     double GNEWT = 6.6742e-8; // Gravitational constant
     double MSUN = 1.989e33; // grams per solar mass
