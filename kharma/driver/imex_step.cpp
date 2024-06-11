@@ -69,12 +69,14 @@ TaskCollection KHARMADriver::MakeImExTaskCollection(BlockList_t &blocks, int sta
     auto& driver_pkg   = pkgs.at("Driver")->AllParams();
     const bool use_electrons = pkgs.count("Electrons");
     //COOLING:
-    const bool use_heating = false;
-    const bool use_cooling = false;
+    bool use_heating_temp = false;
+    bool use_cooling_temp = false;
     if(use_electrons){
-        const bool use_heating = pkgs.at("Electrons")->Param<bool>("do_heating");
-        const bool use_cooling = pkgs.at("Electrons")->Param<bool>("do_cooling");
+        use_heating_temp = pkgs.at("Electrons")->Param<bool>("do_heating");
+        use_cooling_temp = pkgs.at("Electrons")->Param<bool>("do_cooling");
     }
+    const bool use_heating = use_heating_temp;
+    const bool use_cooling = use_cooling_temp;
     const bool use_b_cleanup = pkgs.count("B_Cleanup");
     const bool use_b_ct = pkgs.count("B_CT");
     const bool use_fofc = flux_pkg.Get<bool>("use_fofc");
