@@ -85,6 +85,9 @@ TaskStatus InitElectrons(std::shared_ptr<MeshBlockData<Real>>& rc, ParameterInpu
  */
 void BlockUtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse=false);
 
+//this is to solve an issue where entropies get jumbled when restarting a run
+void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse=false);
+
 /**
  * This heating step is custom for this package.  It is added manually to any task list in the KHARMADriver,
  * at the very end of the step. For reasons mentioned there & above, it must update *all* zones, incl. ghosts.

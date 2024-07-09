@@ -267,6 +267,33 @@ TaskStatus InitElectrons(std::shared_ptr<MeshBlockData<Real>>& rc, ParameterInpu
     return TaskStatus::complete;
 }
 
+void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse)
+{
+    printf("printing from inside MeshUtoP\n");
+    auto pmb = md->GetBlockData(0)->GetBlockPointer();
+
+    // No need for a "map" here, we just want everything that fits these
+    PackIndexMap prims_map, cons_map;
+    //auto& P = md->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& e_P = md->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Elec"), Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& e_U = md->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Elec"), Metadata::Conserved}, cons_map);
+
+    auto rho_U = md->GetBlockData(0)->Get("cons.rho").data;
+
+    auto bounds      = coarse ? pmb->c_cellbounds : pmb->cellbounds;
+    IndexRange ib    = bounds.GetBoundsI(domain);
+    IndexRange jb    = bounds.GetBoundsJ(domain);
+    IndexRange kb    = bounds.GetBoundsK(domain);
+    auto block = IndexRange{0, e_P.GetDim(5)-1};
+    printf("I bet the memory issue is about to happen\n");
+    pmb->par_for("UtoP_electrons", block.s, block.e, 0, e_P.GetDim(4)-1, kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+        KOKKOS_LAMBDA (const int &b, const int &p, const int &k, const int &j, const int &i) {
+            e_P(b, p, k, j, i) = e_U(b, p, k, j, i) / rho_U(k, j, i);
+        }
+    );
+    printf("end of MeshUtoP\n");
+}
+
 void BlockUtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
 {
     auto pmb = rc->GetBlockPointer();
