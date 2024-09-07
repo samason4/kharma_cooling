@@ -34,10 +34,17 @@
 #include "electrons.hpp"
 
 #include "decs.hpp"
+#include "domain.hpp"
+#include "kharma_driver.hpp"
+#include "flux.hpp"
 #include "grmhd.hpp"
 #include "kharma.hpp"
+#include "gaussian.hpp"
 
 #include <parthenon/parthenon.hpp>
+#include <utils/string_utils.hpp>
+
+#include <string>
 
 using namespace parthenon;
 
@@ -48,40 +55,47 @@ using namespace parthenon;
 namespace Electrons
 {
 
-std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t packages)
+std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<Packages_t>& packages)
 {
-    auto pkg = std::make_shared<StateDescriptor>("Electrons");
+    auto pkg = std::make_shared<KHARMAPackage>("Electrons");
     Params &params = pkg->AllParams();
-
-    // Diagnostic data
-    int verbose = pin->GetOrAddInteger("debug", "verbose", 0);
-    params.Add("verbose", verbose);
-    int flag_verbose = pin->GetOrAddInteger("debug", "flag_verbose", 0);
-    params.Add("flag_verbose", flag_verbose);
-    int extra_checks = pin->GetOrAddInteger("debug", "extra_checks", 0);
-    params.Add("extra_checks", extra_checks);
 
     // Evolution parameters
     Real gamma_e = pin->GetOrAddReal("electrons", "gamma_e", 4./3);
     params.Add("gamma_e", gamma_e);
     Real gamma_p = pin->GetOrAddReal("electrons", "gamma_p", 5./3);
     params.Add("gamma_p", gamma_p);
-    Real fel_0 = pin->GetOrAddReal("electrons", "fel_0", 0.01);
-    params.Add("fel_0", fel_0);
+    Real M_bh = pin->GetOrAddReal("electrons", "M_bh", pow(6.5,9));
+    params.Add("M_bh", M_bh);
+    Real M_unit = pin->GetOrAddReal("electrons", "M_unit", pow(1.0,28));
+    params.Add("M_unit", M_unit);
+    // Whether to enforce that dissipation be positive, i.e. increasing entropy
+    // Probably more accurate to keep off.
+    bool enforce_positive_dissipation = pin->GetOrAddBoolean("electrons", "enforce_positive_dissipation", false);
+    params.Add("enforce_positive_dissipation", enforce_positive_dissipation);
+
     // This is used only in constant model
     Real fel_const = pin->GetOrAddReal("electrons", "fel_constant", 0.1);
     params.Add("fel_constant", fel_const);
+
     // This prevented spurious heating when heat_electrons used pre-floored dissipation
     bool suppress_highb_heat = pin->GetOrAddBoolean("electrons", "suppress_highb_heat", false);
     params.Add("suppress_highb_heat", suppress_highb_heat);
 
+    // Initialization
+    bool init_to_fel_0 = pin->GetOrAddBoolean("electrons", "init_to_fel_0", true);
+    params.Add("init_to_fel_0", init_to_fel_0);
+    Real fel_0 = pin->GetOrAddReal("electrons", "fel_0", 0.01);
+    params.Add("fel_0", fel_0);
+
     // Floors
+    // Whether to limit electron entropy K with following two floors
+    bool limit_kel = pin->GetOrAddBoolean("electrons", "limit_kel", true);
+    params.Add("limit_kel", limit_kel);
     Real tp_over_te_min = pin->GetOrAddReal("electrons", "tp_over_te_min", 0.001);
     params.Add("tp_over_te_min", tp_over_te_min);
     Real tp_over_te_max = pin->GetOrAddReal("electrons", "tp_over_te_max", 1000.0);
     params.Add("tp_over_te_max", tp_over_te_max);
-    Real ktot_max = pin->GetOrAddReal("floors", "ktot_max", 1.e20);
-    params.Add("ktot_max", ktot_max);
 
     // Model options
     bool do_constant = pin->GetOrAddBoolean("electrons", "constant", false);
@@ -96,21 +110,67 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
     params.Add("do_rowan", do_rowan);
     bool do_sharma = pin->GetOrAddBoolean("electrons", "sharma", false);
     params.Add("do_sharma", do_sharma);
+    bool do_cooling = pin->GetOrAddBoolean("electrons", "cooling", false);
+    params.Add("do_cooling", do_cooling);
+    bool do_heating = pin->GetOrAddBoolean("electrons", "heating", true);
+    params.Add("do_heating", do_heating);
+    //COOLING:
+    if(do_cooling){
+        //auto cpkg = pmb->packages.Get<KHARMAPackage>("Electrons");
+        pkg->BlockApplyPrimSource = ApplyElectronCooling;
+    }
 
-    MetadataFlag isPrimitive = packages.Get("GRMHD")->Param<MetadataFlag>("PrimitiveFlag");
-    MetadataFlag isElectrons = Metadata::AllocateNewFlag("Electrons");
-    params.Add("ElectronsFlag", isElectrons);
+    // Evolving e- implicitly is not tested.  Shouldn't be necessary even in EMHD
+    auto& driver = packages->Get("Driver")->AllParams();
+    auto driver_type = driver.Get<DriverType>("type");
+    bool implicit_e = (driver_type == DriverType::imex && pin->GetOrAddBoolean("electrons", "implicit", false));
+    params.Add("implicit", implicit_e);
 
-    // General options for primitive and conserved variables in KHARMA
-    Metadata m_con  = Metadata({Metadata::Real, Metadata::Cell, Metadata::Independent, Metadata::FillGhost,
-                 Metadata::Restart, Metadata::Conserved, Metadata::WithFluxes, isElectrons});
-    Metadata m_prim = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived,
-                  isPrimitive, isElectrons});
+    Metadata::AddUserFlag("Elec");
+    MetadataFlag areWeImplicit = (implicit_e) ? Metadata::GetUserFlag("Implicit")
+                                              : Metadata::GetUserFlag("Explicit");
+    std::vector<MetadataFlag> flags_elec = {Metadata::Cell, areWeImplicit, Metadata::GetUserFlag("Elec")};
+
+    auto flags_prim = driver.Get<std::vector<MetadataFlag>>("prim_flags");
+    flags_prim.insert(flags_prim.end(), flags_elec.begin(), flags_elec.end());
+    auto flags_cons = driver.Get<std::vector<MetadataFlag>>("cons_flags");
+    flags_cons.insert(flags_cons.end(), flags_elec.begin(), flags_elec.end());
+
+    /*
+    std::vector<MetadataFlag> flags_prim = {Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::GetUserFlag("Primitive"),
+                                            Metadata::Restart, areWeImplicit, Metadata::GetUserFlag("Electrons")};
+    std::vector<MetadataFlag> flags_cons = {Metadata::Real, Metadata::Cell, Metadata::Independent, Metadata::Conserved,
+                                            Metadata::WithFluxes, areWeImplicit, Metadata::GetUserFlag("Electrons")};
+    */
+
+    bool sync_prims = packages->Get("Driver")->Param<bool>("sync_prims");
+    if (!sync_prims) { // Normal operation
+        // As mentioned elsewhere, KHARMA treats the conserved variables as the independent ones,
+        // and the primitives as "Derived"
+        // Primitives are still used for reconstruction, physical boundaries, and output, and are
+        // generally the easier to understand quantities
+        // TODO can we not sync prims if we're using two_sync?
+        flags_cons.push_back(Metadata::FillGhost);
+        flags_prim.push_back(Metadata::FillGhost);
+    } else { // Treat primitive vars as fundamental
+        // When evolving (E)GRMHD implicitly, we just mark the primitive variables to be synchronized.
+        // This won't work for AMR, but it fits much better with the implicit solver, which expects
+        // primitive variable inputs and produces primitive variable results.
+        flags_prim.push_back(Metadata::FillGhost);
+    }
 
     // Total entropy, used to track changes
     int nKs = 1;
-    pkg->AddField("cons.Ktot", m_con);
-    pkg->AddField("prims.Ktot", m_prim);
+    pkg->AddField("cons.Ktot", flags_cons);
+    pkg->AddField("prims.Ktot", flags_prim);
+
+    if ("driven_turbulence" == packages->Get("Globals")->Param<std::string>("problem")) {
+        std::vector<int> s_vector({2});
+        Metadata m_vector = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy}, s_vector);
+        Metadata m = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy});
+        pkg->AddField("grf_normalized", m_vector);
+        pkg->AddField("alfven_speed", m);
+    }
 
     // Individual models
     // TO ADD A MODEL:
@@ -120,50 +180,64 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
     // 4. Add heating model in ApplyElectronHeating, below
     if (do_constant) {
         nKs += 1;
-        pkg->AddField("cons.Kel_Constant", m_con);
-        pkg->AddField("prims.Kel_Constant", m_prim);
+        pkg->AddField("cons.Kel_Constant", flags_cons);
+        pkg->AddField("prims.Kel_Constant", flags_prim);
     }
     if (do_howes) {
         nKs += 1;
-        pkg->AddField("cons.Kel_Howes", m_con);
-        pkg->AddField("prims.Kel_Howes", m_prim);
+        pkg->AddField("cons.Kel_Howes", flags_cons);
+        pkg->AddField("prims.Kel_Howes", flags_prim);
     }
     if (do_kawazura) {
         nKs += 1;
-        pkg->AddField("cons.Kel_Kawazura", m_con);
-        pkg->AddField("prims.Kel_Kawazura", m_prim);
+        pkg->AddField("cons.Kel_Kawazura", flags_cons);
+        pkg->AddField("prims.Kel_Kawazura", flags_prim);
     }
     if (do_werner) {
         nKs += 1;
-        pkg->AddField("cons.Kel_Werner", m_con);
-        pkg->AddField("prims.Kel_Werner", m_prim);
+        pkg->AddField("cons.Kel_Werner", flags_cons);
+        pkg->AddField("prims.Kel_Werner", flags_prim);
     }
     if (do_rowan) {
         nKs += 1;
-        pkg->AddField("cons.Kel_Rowan", m_con);
-        pkg->AddField("prims.Kel_Rowan", m_prim);
+        pkg->AddField("cons.Kel_Rowan", flags_cons);
+        pkg->AddField("prims.Kel_Rowan", flags_prim);
     }
     if (do_sharma) {
         nKs += 1;
-        pkg->AddField("cons.Kel_Sharma", m_con);
-        pkg->AddField("prims.Kel_Sharma", m_prim);
+        pkg->AddField("cons.Kel_Sharma", flags_cons);
+        pkg->AddField("prims.Kel_Sharma", flags_prim);
     }
     // TODO if nKs == 1 then rename Kel_Whatever -> Kel?
     // TODO record nKs and find a nice way to loop/vector the device-side layout?
 
-    pkg->FillDerivedBlock = Electrons::FillDerivedBlock;
+    // Problem-specific fields
+    if (packages->Get("Globals")->Param<std::string>("problem") == "driven_turbulence") {
+        std::vector<int> s_vector({2});
+        Metadata m_vector = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy}, s_vector);
+        Metadata m = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy});
+        pkg->AddField("grf_normalized", m_vector);
+        pkg->AddField("alfven_speed", m);
+    }
+
+    pkg->BlockUtoP = Electrons::BlockUtoP;
+    pkg->BoundaryUtoP = Electrons::BlockUtoP;
+
     return pkg;
 }
-
-TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
+TaskStatus InitElectrons(std::shared_ptr<MeshBlockData<Real>>& rc, ParameterInput *pin)
 {
+    Flag("InitElectrons");
     auto pmb = rc->GetBlockPointer();
 
-    MetadataFlag isElectrons = pmb->packages.Get("Electrons")->Param<MetadataFlag>("ElectronsFlag");
-    MetadataFlag isPrimitive = pmb->packages.Get("GRMHD")->Param<MetadataFlag>("PrimitiveFlag");
+    // Don't initialize entropies if we've already done so e.g. in Hubble problem
+    if (!pmb->packages.Get("Electrons")->Param<bool>("init_to_fel_0")) {
+        return TaskStatus::complete;
+    }
+
     // Need to distinguish KTOT from the other variables, so we record which it is
     PackIndexMap prims_map;
-    auto& e_P = rc->PackVariables({isElectrons, isPrimitive}, prims_map);
+    auto& e_P = rc->PackVariables({Metadata::GetUserFlag("Elec"), Metadata::GetUserFlag("Primitive")}, prims_map);
     const int ktot_index = prims_map["prims.Ktot"].first;
     // Just need these two from the rest of Prims
     GridScalar rho = rc->Get("prims.rho").data;
@@ -178,7 +252,7 @@ TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
     int js = pmb->cellbounds.js(domain), je = pmb->cellbounds.je(domain);
     int ks = pmb->cellbounds.ks(domain), ke = pmb->cellbounds.ke(domain);
     pmb->par_for("UtoP_electrons", 0, e_P.GetDim(4)-1, ks, ke, js, je, is, ie,
-        KOKKOS_LAMBDA_VARS {
+        KOKKOS_LAMBDA (const int &p, const int &k, const int &j, const int &i) {
             if (p == ktot_index) {
                 // Initialize total entropy by definition,
                 e_P(p, k, j, i) = (gam - 1.) * u(k, j, i) * m::pow(rho(k, j, i), -gam);
@@ -189,22 +263,66 @@ TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
         }
     );
 
-    // iharm3d syncs bounds here
+    EndFlag();
     return TaskStatus::complete;
 }
 
-void UtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
+void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse)
 {
-    Flag(rc, "UtoP electrons");
+    printf("printing from inside MeshUtoP\n");
+    auto pmb = md->GetBlockData(0)->GetBlockPointer();
+
+    // No need for a "map" here, we just want everything that fits these
+    PackIndexMap prims_map, cons_map;
+    //auto& P = md->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& e_P = md->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Elec"), Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& e_U = md->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Elec"), Metadata::Conserved}, cons_map);
+
+    auto rho_U = md->GetBlockData(0)->Get("cons.rho").data;
+
+    auto bounds      = coarse ? pmb->c_cellbounds : pmb->cellbounds;
+    IndexRange ib    = bounds.GetBoundsI(domain);
+    IndexRange jb    = bounds.GetBoundsJ(domain);
+    IndexRange kb    = bounds.GetBoundsK(domain);
+    auto block = IndexRange{0, e_P.GetDim(5)-1};
+    printf("I bet the memory issue is about to happen\n");
+    pmb->par_for("UtoP_electrons", block.s, block.e, 0, e_P.GetDim(4)-1, kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+        KOKKOS_LAMBDA (const int &b, const int &p, const int &k, const int &j, const int &i) {
+            e_P(b, p, k, j, i) = e_U(b, p, k, j, i) / rho_U(k, j, i);
+        }
+    );
+    printf("end of MeshUtoP\n");
+}
+
+void BlockUtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
+{
     auto pmb = rc->GetBlockPointer();
 
-    MetadataFlag isElectrons = pmb->packages.Get("Electrons")->Param<MetadataFlag>("ElectronsFlag");
-    MetadataFlag isPrimitive = pmb->packages.Get("GRMHD")->Param<MetadataFlag>("PrimitiveFlag");
     // No need for a "map" here, we just want everything that fits these
-    auto& e_P = rc->PackVariables({isElectrons, isPrimitive});
-    auto& e_U = rc->PackVariables({isElectrons, Metadata::Conserved});
+    auto& e_P = rc->PackVariables({Metadata::GetUserFlag("Elec"), Metadata::GetUserFlag("Primitive")});
+    auto& e_U = rc->PackVariables({Metadata::GetUserFlag("Elec"), Metadata::Conserved});
     // And then the local density
     GridScalar rho_U = rc->Get("cons.rho").data;
+
+    auto bounds = coarse ? pmb->c_cellbounds : pmb->cellbounds;
+    int is = bounds.is(domain), ie = bounds.ie(domain);
+    int js = bounds.js(domain), je = bounds.je(domain);
+    int ks = bounds.ks(domain), ke = bounds.ke(domain);
+    pmb->par_for("UtoP_electrons", 0, e_P.GetDim(4)-1, ks, ke, js, je, is, ie,
+        KOKKOS_LAMBDA (const int &p, const int &k, const int &j, const int &i) {
+            e_P(p, k, j, i) = e_U(p, k, j, i) / rho_U(k, j, i);
+        }
+    );
+}
+
+void BlockPtoU(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
+{
+    auto pmb = rc->GetBlockPointer();
+
+    PackIndexMap prims_map, cons_map;
+    auto& P = rc->PackVariables({Metadata::GetUserFlag("Primitive"), Metadata::Cell}, prims_map);
+    auto& U = rc->PackVariables({Metadata::Conserved, Metadata::Cell}, cons_map);
+    const VarMap m_p(prims_map, false), m_u(cons_map, true);
 
     const auto& G = pmb->coords;
 
@@ -212,31 +330,26 @@ void UtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
     int is = bounds.is(domain), ie = bounds.ie(domain);
     int js = bounds.js(domain), je = bounds.je(domain);
     int ks = bounds.ks(domain), ke = bounds.ke(domain);
-    pmb->par_for("UtoP_electrons", 0, e_P.GetDim(4)-1, ks, ke, js, je, is, ie,
-        KOKKOS_LAMBDA_VARS {
-            e_P(p, k, j, i) = e_U(p, k, j, i) / rho_U(k, j, i);
+    pmb->par_for("PtoU_electrons", ks, ke, js, je, is, ie,
+        KOKKOS_LAMBDA (const int &k, const int &j, const int &i) {
+            Electrons::p_to_u(G, P, m_p, k, j, i, U, m_u);
         }
     );
-
 }
 
-TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real> *rc)
+TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real> *rc, bool generate_grf)
 {
-    Flag(rc, "Applying electron heating");
-    auto pmb = rc->GetBlockPointer();
-
-    MetadataFlag isElectrons = pmb->packages.Get("Electrons")->Param<MetadataFlag>("ElectronsFlag");
-    MetadataFlag isPrimitive = pmb->packages.Get("GRMHD")->Param<MetadataFlag>("PrimitiveFlag");
     // Need to distinguish different electron models
     // So far, Parthenon's maps of the same sets of variables are consistent,
     // so we only bother with one map of the primitives
     // TODO Parthenon can definitely build a pack from a map, though
     PackIndexMap prims_map, cons_map;
-    auto& P = rc_old->PackVariables({isPrimitive}, prims_map);
-    auto& P_new = rc->PackVariables({isPrimitive}, prims_map);
+    auto& P = rc_old->PackVariables({Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& P_new = rc->PackVariables({Metadata::GetUserFlag("Primitive")}, prims_map);
     auto& U_new = rc->PackVariables({Metadata::Conserved}, cons_map);
     const VarMap m_p(prims_map, false), m_u(cons_map, true);
 
+    auto pmb = rc->GetBlockPointer();
     const auto& G = pmb->coords;
 
     const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
@@ -247,39 +360,47 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
     // Floors
     const Real tptemin = pmb->packages.Get("Electrons")->Param<Real>("tp_over_te_min");
     const Real tptemax = pmb->packages.Get("Electrons")->Param<Real>("tp_over_te_max");
+    const bool enforce_positive_diss = pmb->packages.Get("Electrons")->Param<bool>("enforce_positive_dissipation");
+    const bool limit_kel = pmb->packages.Get("Electrons")->Param<bool>("limit_kel");
 
     // This function (and any primitive-variable sources) needs to be run over the entire domain,
     // because the boundary zones have already been updated and so the same calculations must be applied
     // in order to keep them consistent.
-    // See harm_driver.cpp for the full picture of what gets updated when.
+    // See kharma_step.cpp for the full picture of what gets updated when.
     const IndexRange ib = rc->GetBoundsI(IndexDomain::entire);
     const IndexRange jb = rc->GetBoundsJ(IndexDomain::entire);
     const IndexRange kb = rc->GetBoundsK(IndexDomain::entire);
     pmb->par_for("heat_electrons", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
-        KOKKOS_LAMBDA_3D {
+        KOKKOS_LAMBDA (const int &k, const int &j, const int &i) {
             FourVectors Dtmp;
             GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
             Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
 
-            // Calculate the new total entropy in this cell
-            const Real kNew = (gam-1.) * P_new(m_p.UU, k, j, i) / m::pow(P_new(m_p.RHO, k, j, i) ,gam);
+            // Calculate the new total entropy in this cell considering heating
+            const Real k_energy_conserving = (gam-1.) * P_new(m_p.UU, k, j, i) / m::pow(P_new(m_p.RHO, k, j, i), gam);
 
-            // Dissipation is the real entropy kNew minus any advected entropy from the previous (sub-)step P_new(KTOT)
-            // Due to floors we can end up with diss==0 or even *slightly* <0, so we require it to be positive here
+            // Dissipation is the real entropy k_energy_conserving minus any advected entropy from the previous (sub-)step P_new(KTOT)
+            Real diss_tmp = (game-1.) / (gam-1.) * m::pow(P(m_p.RHO, k, j, i), gam - game) * (k_energy_conserving - P_new(m_p.KTOT, k, j, i));
+            //this is eq27                  ratio of heating: Qi/Qe                           advected entropy from prev step
+            // ^ denotes the solution corresponding to entropy conservation
+
             // Under the flag "suppress_highb_heat", we set all dissipation to zero at sigma > 1.
-            const Real diss = (suppress_highb_heat && (bsq / P(m_p.RHO, k, j, i) > 1.)) ? 0.0 :
-                                m::max((game-1.) / (gam-1.) * m::pow(P(m_p.RHO, k, j, i), gam - game) * (kNew - P_new(m_p.KTOT, k, j, i)), 0.0);
+            diss_tmp = (suppress_highb_heat && (bsq / P(m_p.RHO, k, j, i) > 1.)) ? 0.0 : diss_tmp;
+
+            // Default is True diss_sign == Enforce nonnegative
+            // Due to floors we can end up with diss==0 or even *slightly* <0, so we require it to be positive here
+            const Real diss = enforce_positive_diss ? m::max(diss_tmp, 0.0) : diss_tmp;
 
             // Reset the entropy to measure next (sub-)step's dissipation
-            P_new(m_p.KTOT, k, j, i) = kNew;
+            P_new(m_p.KTOT, k, j, i) = k_energy_conserving;
 
             // We'll be applying floors inline as we heat electrons, so
             // we cache the floors as entropy limits so they'll be cheaper to apply.
             // Note tp_te_min -> kel_max & vice versa
             const Real kel_max = P(m_p.KTOT, k, j, i) * m::pow(P(m_p.RHO, k, j, i), gam - game) /
-                                    (tptemin * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.));
+                                    (tptemin * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.)); //0.001
             const Real kel_min = P(m_p.KTOT, k, j, i) * m::pow(P(m_p.RHO, k, j, i), gam - game) /
-                                    (tptemax * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.));
+                                    (tptemax * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.)); //1000
             // Note this differs a little from Ressler '15, who ensure u_e/u_g > 0.01 rather than use temperatures
 
             // The ion temperature is useful for a few models, cache it too.
@@ -290,9 +411,17 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             // Heat different electron passives based on different dissipation fraction models
             // Expressions here closely adapted (read: stolen) from implementation in iharm3d
             // courtesy of Cesar Diaz, see https://github.com/AFD-Illinois/iharm3d
+            
+            // In all of these the electron entropy stored value is the entropy conserving solution 
+                                 // and then when updated it becomes the energy conserving solution
             if (m_p.K_CONSTANT >= 0) {
                 const Real fel = fel_const;
-                P_new(m_p.K_CONSTANT, k, j, i) = clip(P_new(m_p.K_CONSTANT, k, j, i) + fel * diss, kel_min, kel_max);
+                // Default is true then enforce kel limits with clamp/clip, else no restrictions on kel
+                if (limit_kel) {
+                    P_new(m_p.K_CONSTANT, k, j, i) = clip(P_new(m_p.K_CONSTANT, k, j, i) + fel * diss, kel_min, kel_max);
+                } else {
+                    P_new(m_p.K_CONSTANT, k, j, i) += fel * diss;
+                }
             }
             if (m_p.K_HOWES >= 0) {
                 const Real Tel = m::max(P(m_p.K_HOWES, k, j, i) * m::pow(P(m_p.RHO, k, j, i), game-1), SMALL);
@@ -308,8 +437,8 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real c3 = (Trat <= 1.) ? 18. + 5.*logTrat : 18.;
 
                 const Real beta_pow = m::pow(beta, mbeta);
-                const Real qrat = 0.92 * (c2*c2 + beta_pow)/(c3*c3 + beta_pow) * exp(-1./beta) * m::sqrt(MP/ME * Trat);
-                const Real fel = 1./(1. + qrat);
+                const Real qrat = 0.92 * (c2*c2 + beta_pow)/(c3*c3 + beta_pow) * m::exp(-1./beta) * m::sqrt(MP/ME * Trat);
+                const Real fel = 1./(1. + qrat);//*********************************************************************************change fel here?************************************************************
                 P_new(m_p.K_HOWES, k, j, i) = clip(P_new(m_p.K_HOWES, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_KAWAZURA >= 0) {
@@ -320,8 +449,8 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real pres = P(m_p.RHO, k, j, i) * Tpr; // Proton pressure
                 const Real beta = m::min(pres / bsq * 2, 1.e20);// If somebody enables electrons in a GRHD sim
 
-                const Real QiQe = 35. / (1. + m::pow(beta/15., -1.4) * exp(-0.1 / Trat));
-                const Real fel = 1./(1. + QiQe);
+                const Real QiQe = 35. / (1. + m::pow(beta/15., -1.4) * m::exp(-0.1 / Trat));
+                const Real fel = 1./(1. + QiQe);//*********************************************************************************change fel here?************************************************************
                 P_new(m_p.K_KAWAZURA, k, j, i) = clip(P_new(m_p.K_KAWAZURA, k, j, i) + fel * diss, kel_min, kel_max);
             }
             // TODO KAWAZURA 19/20/21 separately?
@@ -338,7 +467,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real beta = pres / bsq * 2;
                 const Real sigma = bsq / (P(m_p.RHO, k, j, i) + P(m_p.UU, k, j, i) + pg);
                 const Real betamax = 0.25 / sigma;
-                const Real fel = 0.5 * exp(-m::pow(1 - beta/betamax, 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
+                const Real fel = 0.5 * m::exp(-m::pow(1 - beta/betamax, 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
                 P_new(m_p.K_ROWAN, k, j, i) = clip(P_new(m_p.K_ROWAN, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_SHARMA >= 0) {
@@ -350,47 +479,404 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real fel = 1./(1.+1./QeQi);
                 P_new(m_p.K_SHARMA, k, j, i) = clip(P_new(m_p.K_SHARMA, k, j, i) + fel * diss, kel_min, kel_max);
             }
-
-            // Finally, make sure we update the conserved electron variables to keep them in sync
-            Electrons::p_to_u(G, P_new, m_p, k, j, i, U_new, m_u);
+            // Conserved variables are updated at the end of the step
         }
     );
 
-    // A couple of the electron test problems add source terms
-    // TODO move this to dUdt with other source terms?
-    const std::string prob = pmb->packages.Get("GRMHD")->Param<std::string>("problem");
-    if (prob == "hubble") {
-        const Real v0 = pmb->packages.Get("GRMHD")->Param<Real>("v0");
-        const Real ug0 = pmb->packages.Get("GRMHD")->Param<Real>("ug0");
+    const IndexRange myib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+    const IndexRange myjb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+    const IndexRange mykb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+    // A couple of the electron test problems add source terms to the *fluid*.
+    // we bundle them here because they're generally relevant alongside e- heating,
+    // and should be applied at the same time
+    const std::string prob = pmb->packages.Get("Globals")->Param<std::string>("problem");
+    if (prob == "driven_turbulence") { // Gaussian random field:
+        const auto& G = pmb->coords;
+        GridScalar rho = rc->Get("prims.rho").data;
+        GridVector uvec = rc->Get("prims.uvec").data;
+        GridVector grf_normalized = rc->Get("grf_normalized").data;
         const Real t = pmb->packages.Get("Globals")->Param<Real>("time");
-        const Real dt = pmb->packages.Get("Globals")->Param<Real>("dt_last");  // Close enough?
+        Real counter = pmb->packages.Get("GRMHD")->Param<Real>("counter");
+        const Real dt_kick=  pmb->packages.Get("GRMHD")->Param<Real>("dt_kick");
+        if (generate_grf && counter < t) {
+            counter += dt_kick;
+            pmb->packages.Get("GRMHD")->UpdateParam<Real>("counter", counter);
+            printf("Kick applied at time %.32f\n", t);
 
-        pmb->par_for("hubble_Q_source_term", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
-            KOKKOS_LAMBDA_3D {
-                const Real Q = -(ug0 * v0 * (gam - 2) / m::pow(1 + v0 * t, 3));
-                P_new(m_p.UU, k, j, i) += Q * dt;
-                // TODO all flux
-                GRMHD::p_to_u(G, P_new, m_p, gam, k, j, i, U_new, m_u);
-            }
-        );
-    } else if (prob == "forced_MHD") {
-        // Gaussian random field:
-        // incompressible, sigma2 ~ k6 exp (-8k/kpeak), where kpeak = 4pi/L
+            const Real lx1=  pmb->packages.Get("GRMHD")->Param<Real>("lx1");
+            const Real lx2=  pmb->packages.Get("GRMHD")->Param<Real>("lx2");
+            const Real edot= pmb->packages.Get("GRMHD")->Param<Real>("drive_edot");
+            GridScalar alfven_speed = rc->Get("alfven_speed").data;
+            
+            int Nx1 = pmb->cellbounds.ncellsi(IndexDomain::interior);
+            int Nx2 = pmb->cellbounds.ncellsj(IndexDomain::interior);
+            Real *dv0 =  (Real*) malloc(sizeof(Real)*Nx1*Nx2);
+            Real *dv1 =  (Real*) malloc(sizeof(Real)*Nx1*Nx2);
+            create_grf(Nx1, Nx2, lx1, lx2, dv0, dv1);
 
-        // 
+            Real mean_velocity_num0 = 0;    Kokkos::Sum<Real> mean_velocity_num0_reducer(mean_velocity_num0);
+            Real mean_velocity_num1 = 0;    Kokkos::Sum<Real> mean_velocity_num1_reducer(mean_velocity_num1);
+            Real tot_mass = 0;              Kokkos::Sum<Real> tot_mass_reducer(tot_mass);
+            pmb->par_reduce("forced_mhd_normal_kick_centering_mean_vel0", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    Real cell_mass = (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                    local_result += cell_mass * dv0[(i-4)*Nx1+(j-4)];
+                }
+            , mean_velocity_num0_reducer);
+            pmb->par_reduce("forced_mhd_normal_kick_centering_mean_vel1", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    Real cell_mass = (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                    local_result += cell_mass * dv1[(i-4)*Nx1+(j-4)];
+                }
+            , mean_velocity_num1_reducer);
+            pmb->par_reduce("forced_mhd_normal_kick_centering_tot_mass", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    local_result += (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                }
+            , tot_mass_reducer);
+            Real mean_velocity0 = mean_velocity_num0/tot_mass;
+            Real mean_velocity1 = mean_velocity_num1/tot_mass;
+            #pragma omp parallel for simd collapse(2)
+            for (size_t i = 0; i < Nx1 ; i ++) {
+                for (size_t j = 0; j < Nx2 ; j ++) {
+                    dv0[i*Nx1+j] -= mean_velocity0;
+                    dv1[i*Nx1+j] -= mean_velocity1;
+                }
+            } 
+
+            Real Bhalf = 0; Real A = 0; Real init_e = 0; 
+            Kokkos::Sum<Real> Bhalf_reducer(Bhalf); Kokkos::Sum<Real> A_reducer(A); Kokkos::Sum<Real> init_e_reducer(init_e);
+            pmb->par_reduce("forced_mhd_normal_kick_normalization_Bhalf", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    Real cell_mass = (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                    local_result += cell_mass * (dv0[(i-4)*Nx1+(j-4)]*uvec(0, k, j, i) + dv1[(i-4)*Nx1+(j-4)]*uvec(1, k, j, i));
+                }
+            , Bhalf_reducer);
+            pmb->par_reduce("forced_mhd_normal_kick_normalization_A", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    Real cell_mass = (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                    local_result += cell_mass * (pow(dv0[(i-4)*Nx1+(j-4)], 2) + pow(dv1[(i-4)*Nx1+(j-4)], 2));
+                }
+            , A_reducer);
+            pmb->par_reduce("forced_mhd_normal_kick_init_e", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    Real cell_mass = (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                    local_result += 0.5 * cell_mass * (pow(uvec(0, k, j, i), 2) + pow(uvec(1, k, j, i), 2));
+                }
+            , init_e_reducer);
+
+            Real norm_const = (-Bhalf + pow(pow(Bhalf,2) + A*2*dt_kick*edot, 0.5))/A;  // going from k:(0, 0), j:(4, 515), i:(4, 515) inclusive
+            pmb->par_for("forced_mhd_normal_kick_setting", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i) {
+                    grf_normalized(0, k, j, i) = (dv0[(i-4)*Nx1+(j-4)]*norm_const);
+                    grf_normalized(1, k, j, i) = (dv1[(i-4)*Nx1+(j-4)]*norm_const);
+                    uvec(0, k, j, i) += grf_normalized(0, k, j, i);
+                    uvec(1, k, j, i) += grf_normalized(1, k, j, i);
+                    FourVectors Dtmp;
+                    GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
+                    Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
+                    alfven_speed(k,j,i) = bsq/rho(k, j, i); //saving alfven speed for analysis purposes
+                }
+            );
+
+            Real finl_e = 0;    Kokkos::Sum<Real> finl_e_reducer(finl_e);
+            pmb->par_reduce("forced_mhd_normal_kick_finl_e", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
+                KOKKOS_LAMBDA(const int k, const int j, const int i, Real &local_result) {
+                    Real cell_mass = (rho(k, j, i) * G.Dxc<3>(k) * G.Dxc<2>(j) * G.Dxc<1>(i));
+                    local_result += 0.5 * cell_mass * (pow(uvec(0, k, j, i), 2) + pow(uvec(1, k, j, i), 2));
+                }
+            , finl_e_reducer);
+            printf("%.32f\n", A); printf("%.32f\n", Bhalf); printf("%.32f\n", norm_const);
+            printf("%.32f\n", (finl_e-init_e)/dt_kick);
+            free(dv0); free(dv1);
+        }
+        // This could be only the GRMHD vars, for this problem, but speed isn't really an issue
+        Flux::BlockPtoU(rc, IndexDomain::interior);
     }
-
-    Flag(rc, "Applied");
+    EndFlag();
     return TaskStatus::complete;
+}
+
+//COOLING:
+TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
+    PackIndexMap prims_map, cons_map;
+    auto& P = rc->PackVariables({Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& U = rc->PackVariables({Metadata::Conserved}, cons_map);
+    const VarMap m_p(prims_map, false), m_u(cons_map, true);
+    auto pmb = rc->GetBlockPointer();
+    const auto& G = pmb->coords;
+    const Real game = pmb->packages.Get("Electrons")->Param<Real>("gamma_e");
+    const Real dt = pmb->packages.Get("Globals")->Param<Real>("dt_last");
+    const Real M_bh = pmb->packages.Get("Electrons")->Param<Real>("M_bh");
+    const Real M_unit = pmb->packages.Get("Electrons")->Param<Real>("M_unit");
+
+    //for the conversion stuff:
+    //MP, ME are defined in the namespace parthenon (above)
+    //M_bh and M_unit are defined in sane.par or whatever par file you are using
+    double CL = 2.99792458e10; // Speed of light
+    double GNEWT = 6.6742e-8; // Gravitational constant
+    double MSUN = 1.989e33; // grams per solar mass
+    double Kbol = 1.380649e-16; // boltzmann constant
+    double M_bh_cgs = M_bh * MSUN;
+    double L_unit = GNEWT*M_bh_cgs/pow(CL, 2.);
+    double T_unit = L_unit/CL;
+    double RHO_unit = M_unit*pow(L_unit, -3.);
+    double U_unit = RHO_unit*CL*CL;
+    double B_unit = CL*sqrt(4.*M_PI*RHO_unit);
+    double Ne_unit = RHO_unit/(MP + ME);
+    double Thetae_unit = MP/ME;
+
+    const IndexRange ib = rc->GetBoundsI(IndexDomain::interior);
+    const IndexRange jb = rc->GetBoundsJ(IndexDomain::interior);
+    const IndexRange kb = rc->GetBoundsK(IndexDomain::interior);
+    //printf("kel at (5,5) before cooling: %.16f\n", P(m_p.K_HOWES, 0, 54, 54));
+    pmb->par_for("cool_electrons", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+        KOKKOS_LAMBDA (const int &k, const int &j, const int &i) {
+            if (m_p.K_HOWES >= 0){
+                //for Bmag in code unit:
+                FourVectors Dtmp;
+                GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
+                Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
+                double B_mag_code = pow(bsq, 0.5);
+
+                //for getting uel in code units:
+                double kel = P(m_p.K_HOWES, k, j, i);
+                double rho = P(m_p.RHO, k, j, i);
+                double uel = pow(rho, game)*kel/(game-1);
+
+                //now cgs for everything:
+                uel = uel*U_unit;
+                double n_e = rho*Ne_unit;
+                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
+                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double B_mag = B_mag_code*B_unit;
+                double dt_cgs = dt*T_unit;
+
+                //update the internal energy:
+                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+
+                //convert back to code units:
+                uel = uel/U_unit;
+
+                //update the entropy:
+                P(m_p.K_HOWES, k, j, i) = uel/pow(rho, game)*(game-1);
+            }
+            if (m_p.K_KAWAZURA >= 0){
+                //for Bmag in code unit:
+                FourVectors Dtmp;
+                GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
+                Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
+                double B_mag_code = pow(bsq, 0.5);
+
+                //for getting uel in code units:
+                double kel = P(m_p.K_KAWAZURA, k, j, i);
+                double rho = P(m_p.RHO, k, j, i);
+                double uel = pow(rho, game)*kel/(game-1);
+
+                //now cgs for everything:
+                uel = uel*U_unit;
+                double n_e = rho*Ne_unit;
+                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
+                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double B_mag = B_mag_code*B_unit;
+                double dt_cgs = dt*T_unit;
+
+                //update the internal energy:
+                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+
+                //convert back to code units:
+                uel = uel/U_unit;
+
+                //update the entropy:
+                P(m_p.K_KAWAZURA, k, j, i) = uel/pow(rho, game)*(game-1);
+            }
+            if (m_p.K_ROWAN >= 0){
+                //for Bmag in code unit:
+                FourVectors Dtmp;
+                GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
+                Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
+                double B_mag_code = pow(bsq, 0.5);
+
+                //for getting uel in code units:
+                double kel = P(m_p.K_ROWAN, k, j, i);
+                double rho = P(m_p.RHO, k, j, i);
+                double uel = pow(rho, game)*kel/(game-1);
+
+                //now cgs for everything:
+                uel = uel*U_unit;
+                double n_e = rho*Ne_unit;
+                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
+                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double B_mag = B_mag_code*B_unit;
+                double dt_cgs = dt*T_unit;
+
+                //update the internal energy:
+                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+
+                //convert back to code units:
+                uel = uel/U_unit;
+
+                //update the entropy:
+                P(m_p.K_ROWAN, k, j, i) = uel/pow(rho, game)*(game-1);
+            }
+            if (m_p.K_SHARMA >= 0){
+                //for Bmag in code unit:
+                FourVectors Dtmp;
+                GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
+                Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
+                double B_mag_code = pow(bsq, 0.5);
+
+                //for getting uel in code units:
+                double kel = P(m_p.K_SHARMA, k, j, i);
+                double rho = P(m_p.RHO, k, j, i);
+                double uel = pow(rho, game)*kel/(game-1);
+
+                //now cgs for everything:
+                uel = uel*U_unit;
+                double n_e = rho*Ne_unit;
+                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
+                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double B_mag = B_mag_code*B_unit;
+                double dt_cgs = dt*T_unit;
+
+                //update the internal energy:
+                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+
+                //convert back to code units:
+                uel = uel/U_unit;
+
+                //update the entropy:
+                P(m_p.K_SHARMA, k, j, i) = uel/pow(rho, game)*(game-1);
+            }
+            if (m_p.K_WERNER >= 0){
+                //for Bmag in code unit:
+                FourVectors Dtmp;
+                GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
+                Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
+                double B_mag_code = pow(bsq, 0.5);
+
+                //for getting uel in code units:
+                double kel = P(m_p.K_WERNER, k, j, i);
+                double rho = P(m_p.RHO, k, j, i);
+                double uel = pow(rho, game)*kel/(game-1);
+
+                //now cgs for everything:
+                uel = uel*U_unit;
+                double n_e = rho*Ne_unit;
+                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
+                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double B_mag = B_mag_code*B_unit;
+                double dt_cgs = dt*T_unit;
+
+                //update the internal energy:
+                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+
+                //convert back to code units:
+                uel = uel/U_unit;
+
+                //update the entropy:
+                P(m_p.K_WERNER, k, j, i) = uel/pow(rho, game)*(game-1);
+            }
+        }
+    );
+    auto& P2 = rc->PackVariables({Metadata::GetUserFlag("Primitive")}, prims_map);
+    auto& U2 = rc->PackVariables({Metadata::Conserved}, cons_map);
+    const VarMap m_p2(prims_map, false), m_u2(cons_map, true);
+    //printf("kel at (5,5) after corrector cooling: %.16f\n", P2(m_p2.K_HOWES, 0, 54, 54));
+    Electrons::BlockPtoU(rc, IndexDomain::entire, false);
+    return TaskStatus::complete;
+}
+
+// these are functions that are used to print stuff from the driver
+TaskStatus FindKelCoolingMD(MeshData<Real> *rc){
+    //I call this in the first task region
+    PackIndexMap prims_map, cons_map;
+    auto P = rc->PackVariables(std::vector<MetadataFlag>{Metadata::GetUserFlag("Primitive")}, prims_map);
+    const VarMap m_p(prims_map, false), m_u(cons_map, true);
+    auto block = IndexRange{0, P.GetDim(5)-1};
+    printf("kel at outer ghost 1st task region: %.16f || %.16f || %.16f || %.16f \n", P(block.s, m_p.K_HOWES, 0, 0, 132), P(block.s, m_p.K_HOWES, 0, 0, 133), P(block.s, m_p.K_HOWES, 0, 0, 134), P(block.s, m_p.K_HOWES, 0, 0, 135));
+    //printf("rho at (50,50) Mesh Data: %.16f\n", P(block.s, m_p.RHO, 0, 54, 54));
+    //printf("ktot at (50,50) Mesh Data: %.16f\n", P(block.s, m_p.KTOT, 0, 54, 54));
+    return TaskStatus::complete;
+}
+
+TaskStatus FindKelCoolingMBD(MeshBlockData<Real> *rc){
+    //I call this in the second task region
+    PackIndexMap prims_map, cons_map;
+    auto& P = rc->PackVariables({Metadata::GetUserFlag("Primitive")}, prims_map);
+    const VarMap m_p(prims_map, false), m_u(cons_map, true);
+    printf("kel at outer ghost 2nd task region: %.16f || %.16f || %.16f || %.16f \n", P(m_p.K_HOWES, 132, 0, 0), P(m_p.K_HOWES, 133, 0, 0), P(m_p.K_HOWES, 134, 0, 0), P(m_p.K_HOWES, 135, 0, 0));
+    //printf("rho at (50,50) Mesh Block Data: %.16f\n", P(m_p.RHO, 0, 54, 54));
+    //printf("ktot at (50,50) Mesh Block Data: %.16f\n", P(m_p.KTOT, 0, 54, 54));
+    return TaskStatus::complete;
+}
+
+void ApplyFloors(MeshBlockData<Real> *mbd, IndexDomain domain)
+{
+    auto pmb                 = mbd->GetBlockPointer();
+    auto packages            = pmb->packages;
+
+    PackIndexMap prims_map, cons_map;
+    auto P = mbd->PackVariables({Metadata::GetUserFlag("Primitive")}, prims_map);
+    const VarMap m_p(prims_map, false);
+
+    auto fflag = mbd->PackVariables(std::vector<std::string>{"fflag"}, prims_map);
+
+    const auto& G = pmb->coords;
+
+    const Real gam = packages.Get("GRMHD")->Param<Real>("gamma");
+    const Floors::Prescription floors       = packages.Get("Floors")->Param<Floors::Prescription>("prescription");
+    const Floors::Prescription floors_inner = packages.Get("Floors")->Param<Floors::Prescription>("prescription_inner");
+
+    const IndexRange3 b = KDomain::GetRange(mbd, domain);
+    pmb->par_for("apply_electrons_floors", b.ks, b.ke, b.js, b.je, b.is, b.ie,
+        KOKKOS_LAMBDA (const int &k, const int &j, const int &i) {
+
+            // Also apply the ceiling to the advected entropy KTOT, if we're keeping track of that
+            // (either for electrons, or robust primitive inversions in future)
+            Real ktot_max;
+            if (m_p.KTOT >= 0) {
+                if (floors.radius_dependent_floors && G.coords.is_spherical()
+                    && G.r(k, j, i) < floors.floors_switch_r) {
+                    ktot_max = floors_inner.ktot_max;
+                } else {
+                    ktot_max = floors.ktot_max;
+                }
+                
+                if (P(m_p.KTOT, k, j, i) > ktot_max) {
+                    fflag(0, k, j, i) = Floors::FFlag::KTOT | (int) fflag(0, k, j, i);
+                    P(m_p.KTOT, k, j, i) = ktot_max;
+                }
+            }
+
+            // TODO(BSP) restore Ressler adjustment option
+            // Ressler adjusts KTOT & KEL to conserve u whenever adjusting rho
+            // but does *not* recommend adjusting them when u hits floors/ceilings
+            // This is in contrast to ebhlight, which heats electrons before applying *any* floors,
+            // and resets KTOT during floor application without touching KEL
+            // if (floors.adjust_k && (fflag() & FFlag::GEOM_RHO || fflag() & FFlag::B_RHO)) {
+            //     const Real reduce   = m::pow(rho / P(m_p.RHO, k, j, i), gam);
+            //     const Real reduce_e = m::pow(rho / P(m_p.RHO, k, j, i), 4./3); // TODO pipe in real gam_e
+            //     if (m_p.KTOT >= 0) P(m_p.KTOT, k, j, i) *= reduce;
+            //     if (m_p.K_CONSTANT >= 0) P(m_p.K_CONSTANT, k, j, i) *= reduce_e;
+            //     if (m_p.K_HOWES >= 0)    P(m_p.K_HOWES, k, j, i)    *= reduce_e;
+            //     if (m_p.K_KAWAZURA >= 0) P(m_p.K_KAWAZURA, k, j, i) *= reduce_e;
+            //     if (m_p.K_WERNER >= 0)   P(m_p.K_WERNER, k, j, i)   *= reduce_e;
+            //     if (m_p.K_ROWAN >= 0)    P(m_p.K_ROWAN, k, j, i)    *= reduce_e;
+            //     if (m_p.K_SHARMA >= 0)   P(m_p.K_SHARMA, k, j, i)   *= reduce_e;
+            // }
+        }
+    );
+    Flux::BlockPtoU(mbd, domain);
 }
 
 TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *rc)
 {
-    Flag(rc, "Printing electron diagnostics");
+    Flag("PostStepDiagnostics");
 
     // Output any diagnostics after a step completes
 
-    Flag(rc, "Printed");
+    EndFlag();
     return TaskStatus::complete;
 }
 
@@ -400,4 +886,4 @@ void FillOutput(MeshBlock *pmb, ParameterInput *pin)
     // but which are not otherwise updated.
 }
 
-} // namespace B_FluxCT
+} // namespace Electrons

@@ -39,39 +39,65 @@
 #include "flux_functions.hpp"
 #include "grmhd_functions.hpp"
 #include "pack.hpp"
-#include "prob_common.hpp"
+#include "coordinate_utils.hpp"
 #include "types.hpp"
+#include "hdf5_utils.h"
 
 #include <parthenon/parthenon.hpp>
 
 /**
- * Initialization of a Bondi problem with specified sonic point and BH accretion rate mdot
- * TODO mdot and rs are redundant and should be merged into one parameter
+ * Initialize a Bondi problem over the domain
  */
-TaskStatus InitializeBondi(MeshBlockData<Real> *rc, ParameterInput *pin);
+TaskStatus InitializeBondi(std::shared_ptr<MeshBlockData<Real>>& rc, ParameterInput *pin);
 
 /**
- * Set all values on a given domain to the Bondi inflow analytic steady-state solution
- * 
- * Used for initialization and boundary conditions
+ * Record parameters Bondi problem (or boundaries!) will need throughout the run
+ * Currently uses "GRMHD" package as convenient proxy (TODO fix that with problem-packages)
  */
-TaskStatus SetBondi(MeshBlockData<Real> *rc, IndexDomain domain=IndexDomain::interior, bool coarse=false);
+void AddBondiParameters(ParameterInput *pin, Packages_t &packages);
+
+/**
+ * Set all values on a given domain to the Bondi inflow analytic steady-state solution.
+ * Use the template version when possible, which just calls through
+ */
+TaskStatus SetBondiImpl(std::shared_ptr<MeshBlockData<Real>>& rc, IndexDomain domain, bool coarse);
+
+template<IndexDomain domain>
+TaskStatus SetBondi(std::shared_ptr<MeshBlockData<Real>>& rc, bool coarse=false) {
+    return SetBondiImpl(rc, domain, coarse);
+}
+
+TaskStatus SetElectronBondiImpl(std::shared_ptr<MeshBlockData<Real>>& rc, IndexDomain domain);
+
+template<IndexDomain domain>
+TaskStatus SetElectronBondi(std::shared_ptr<MeshBlockData<Real>>& rc) {
+    return SetElectronBondiImpl(rc, domain);
+}
 
 /**
  * Supporting functions for Bondi flow calculations
  * 
  * Adapted from M. Chandra
+ * Modified by Hyerin Cho and Ramesh Narayan
  */
 KOKKOS_INLINE_FUNCTION Real get_Tfunc(const Real T, const GReal r, const Real C1, const Real C2, const Real n)
 {
-    return m::pow(1. + (1. + n) * T, 2.) * (1. - 2. / r + m::pow(C1 / m::pow(r,2) / m::pow(T, n), 2.)) - C2;
+    const Real A = 1. + (1. + n) * T;
+    const Real B = C1 / (r * r * m::pow(T, n));
+    return A * A * (1. - 2. / r + B * B) - C2;
 }
-KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, const Real n)
+
+KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, const Real n, const Real rs)
 {
     Real rtol = 1.e-12;
     Real ftol = 1.e-14;
-    Real Tmin = 0.6 * (m::sqrt(C2) - 1.) / (n + 1);
-    Real Tmax = m::pow(C1 * m::sqrt(2. / m::pow(r,3)), 1. / n);
+    Real Tinf = (m::sqrt(C2) - 1.) / (n + 1); // temperature at infinity
+    Real Tnear = m::pow(C1 * m::sqrt(2. / (r*r*r)), 1. / n); // temperature near the BH
+
+    // There are two branches of solutions (see Michel et al. 1971) and the two branches cross at rs.
+    // These bounds are set to select the inflowing solution only.
+    Real Tmin = (r < rs) ? Tinf  : m::max(Tnear,Tinf);
+    Real Tmax = (r < rs) ? Tnear : 1.0;
 
     Real f0, f1, fh;
     Real T0, T1, Th;
@@ -79,14 +105,15 @@ KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, c
     f0 = get_Tfunc(T0, r, C1, C2, n);
     T1 = Tmax;
     f1 = get_Tfunc(T1, r, C1, C2, n);
-    if (f0 * f1 > 0) return -1;
+    // TODO(BSP) where does this trigger an error?  Can we make it clearer?
+    if (f0 * f1 > 0) return -1.;
 
-    Th = (f1 * T0 - f0 * T1) / (f1 - f0);
+    Th = (T0 + T1) / 2.; // a simple bisection method which is stable and fast
     fh = get_Tfunc(Th, r, C1, C2, n);
     Real epsT = rtol * (Tmin + Tmax);
     while (m::abs(Th - T0) > epsT && m::abs(Th - T1) > epsT && m::abs(fh) > ftol)
     {
-        if (fh * f0 < 0.) {
+        if (fh * f0 > 0.) {
             T0 = Th;
             f0 = fh;
         } else {
@@ -94,64 +121,96 @@ KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, c
             f1 = fh;
         }
 
-        Th = (f1 * T0 - f0 * T1) / (f1 - f0);
+        Th = (T0 + T1) / 2.; 
         fh = get_Tfunc(Th, r, C1, C2, n);
     }
 
     return Th;
 }
 
-/**
- * Get the Bondi solution at a particular zone
- * Note this assumes that there are ghost zones!
- * 
- * TODO could put this back into SetBondi
- */
-KOKKOS_INLINE_FUNCTION void get_prim_bondi(const GRCoordinates& G, const CoordinateEmbedding& coords, const VariablePack<Real>& P, const VarMap& m_p,
-                                           const Real& gam, const SphBLCoords& bl,  const SphKSCoords& ks, 
-                                           const Real mdot, const Real rs, const int& k, const int& j, const int& i)
+KOKKOS_INLINE_FUNCTION void get_bondi_soln(const Real &r, const Real &rs, const Real &mdot, const Real &gam,
+                                            Real &rho, Real &u, Real &ur)
 {
     // Solution constants
-    // Ideally these could be cached but preformance isn't an issue here
-    Real n = 1. / (gam - 1.);
-    Real uc = m::sqrt(mdot / (2. * rs));
-    Real Vc = -m::sqrt(m::pow(uc, 2) / (1. - 3. * m::pow(uc, 2)));
-    Real Tc = -n * m::pow(Vc, 2) / ((n + 1.) * (n * m::pow(Vc, 2) - 1.));
-    Real C1 = uc * m::pow(rs, 2) * m::pow(Tc, n);
-    Real C2 = m::pow(1. + (1. + n) * Tc, 2) * (1. - 2. * mdot / rs + m::pow(C1, 2) / (m::pow(rs, 4) * m::pow(Tc, 2 * n)));
+    // These don't depend on which zone we're calculating
+    const Real n = 1. / (gam - 1.);
+    const Real uc = m::sqrt(1. / (2. * rs));
+    const Real Vc = m::sqrt(uc * uc / (1. - 3. * uc * uc));
+    const Real Tc = -n * Vc * Vc / ((n + 1.) * (n * Vc * Vc - 1.));
+    const Real C1 = uc * rs * rs * m::pow(Tc, n);
+    const Real A = 1. + (1. + n) * Tc;
+    const Real C2 = A * A * (1. - 2. / rs + uc * uc);
+    const Real K  = m::pow(4 * M_PI * C1 / mdot, 1/n);
+    const Real Kn = m::pow(K, n);
 
+    const Real T = get_T(r, C1, C2, n, rs);
+    const Real Tn = m::pow(T, n);
+
+    rho = Tn / Kn;
+    u = rho * T * n;
+    ur = -C1 / (Tn * r * r);
+}
+
+KOKKOS_INLINE_FUNCTION void get_prim_bondi(const GRCoordinates& G, const bool diffinit, const Real &rs, const Real &mdot, const Real &gam,
+                                            const Real ur_frac, const Real uphi, const Real rin_bondi, const bool fill_interior, Real &rho, Real &u, Real u_prim[NVEC], 
+                                            const int& k, const int& j, const int& i)
+{
+    // Get primitive values initialized
     GReal Xnative[GR_DIM], Xembed[GR_DIM];
     G.coord(k, j, i, Loci::center, Xnative);
     G.coord_embed(k, j, i, Loci::center, Xembed);
     GReal r = Xembed[1];
-    // Unless we're doing a Schwarzchild problem & comparing solutions,
-    // be a little cautious about initializing the Ergosphere zones
-    if (ks.a > 0.1 && r < 2) return;
 
-    Real T = get_T(r, C1, C2, n);
-    Real ur = -C1 / (m::pow(T, n) * m::pow(r, 2));
-    Real rho = m::pow(T, n);
-    Real u = rho * T * n;
+    // Either fill the interior region with the innermost analytically computed value,
+    // or let it be filled with floor values later
+    if (r < rin_bondi) {
+        if (fill_interior) {
+            // just match at the rin_bondi value
+            r = rin_bondi;
+            // TODO(BSP) could also do values at inf, restore that?
+        } else {
+            rho = 0.;
+            u = 0.;
+            u_prim[0] = 0.;
+            u_prim[1] = 0.;
+            u_prim[2] = 0.;
+            return;
+        }
+    }
 
-    // Set u^t to make u^r a 4-vector
-    Real ucon_bl[GR_DIM] = {0, ur, 0, 0};
-    Real gcov_bl[GR_DIM][GR_DIM];
-    bl.gcov_embed(Xembed, gcov_bl);
-    set_ut(gcov_bl, ucon_bl);
+    Real rho_tmp, u_tmp, T_tmp, ur_tmp;
+    Real n = 1. / (gam - 1.);
+    get_bondi_soln(r, rs, mdot, gam, rho_tmp, u_tmp, ur_tmp);
+    T_tmp = u_tmp / (rho_tmp * n);
 
-    // Then transform that 4-vector to KS, then to native
-    Real ucon_ks[GR_DIM], ucon_mks[GR_DIM];
-    ks.vec_from_bl(Xembed, ucon_bl, ucon_ks);
-    coords.con_vec_to_native(Xnative, ucon_ks, ucon_mks);
+    Real rb; // Bondi radius
+    Real rho0, u0, ur0;
+    if (diffinit) {
+        // Get r^{-1} density initialization instead
+    
+        // values at infinity (obtained by putting r = 100 rb)
+        if (m::abs(n - 1.5) < 0.01) rb = rs * rs * 80. / (27. * gam);
+        else rb = (4 * (n + 1)) / (2 * (n + 3) - 9) * rs;
+        get_bondi_soln(100 * rb, rs, mdot, gam, rho0, u0, ur0);
+
+        // interpolation between inner and outer regimes
+        rho = rho0 * (r + rb) / r;
+        u = rho * T_tmp * n;
+    } else {
+        // Normal bondi initialization
+        rho = rho_tmp;
+        u = u_tmp;
+    }
+    Real ur = ur_tmp; // Bondi radial velocity solution
+
+
+    // Get the native-coordinate 4-vector corresponding to ur
+    const Real ucon_bl[GR_DIM] = {0, ur * ur_frac, 0, uphi * m::pow(r,-3./2.)};
+    Real ucon_native[GR_DIM];
+    G.coords.bl_fourvel_to_native(Xnative, ucon_bl, ucon_native);
 
     // Convert native 4-vector to primitive u-twiddle, see Gammie '04
-    Real gcon[GR_DIM][GR_DIM], u_prim[NVEC];
+    Real gcon[GR_DIM][GR_DIM];
     G.gcon(Loci::center, j, i, gcon);
-    fourvel_to_prim(gcon, ucon_mks, u_prim);
-
-    if (!isnan(rho)) P(m_p.RHO, k, j, i) = rho;
-    if (!isnan(u)) P(m_p.UU, k, j, i) = u;
-    if (!isnan(u_prim[0])) P(m_p.U1, k, j, i) = u_prim[0];
-    if (!isnan(u_prim[1])) P(m_p.U2, k, j, i) = u_prim[1];
-    if (!isnan(u_prim[2])) P(m_p.U3, k, j, i) = u_prim[2];
+    fourvel_to_prim(gcon, ucon_native, u_prim);
 }
