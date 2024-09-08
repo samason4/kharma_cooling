@@ -644,16 +644,25 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 double rho = P(m_p.RHO, k, j, i);
                 double uel = pow(rho, game)*kel/(game-1);
 
+                //For getting r: (stolen from another function, a lot of them do this)
+                GReal Xembed[GR_DIM];
+                G.coord_embed(0, j, i, Loci::center, Xembed);
+                GReal r = Xembed[1];
+
                 //now cgs for everything:
                 uel = uel*U_unit;
                 double n_e = rho*Ne_unit;
-                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
-                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double theta_e = Thetae_unit*kel*pow(rho,game-1.);
                 double B_mag = B_mag_code*B_unit;
                 double dt_cgs = dt*T_unit;
+                double r_cgs = r * L_unit;
+                double L = 0.3*r_cgs;
 
                 //update the internal energy:
-                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+                double lambda = 1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e; // pure synchrotron cooling
+                double tau_c = 3.05567e-8*n_e*L/(B_mag*pow(theta_e, 5.0));
+                double F_of_tau = 1/(1+pow(tau_c/3.8e4, 0.4));
+                uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau); // optical depth correction
 
                 //convert back to code units:
                 uel = uel/U_unit;
@@ -673,16 +682,25 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 double rho = P(m_p.RHO, k, j, i);
                 double uel = pow(rho, game)*kel/(game-1);
 
+                //For getting r: (stolen from another function, a lot of them do this)
+                GReal Xembed[GR_DIM];
+                G.coord_embed(0, j, i, Loci::center, Xembed);
+                GReal r = Xembed[1];
+
                 //now cgs for everything:
                 uel = uel*U_unit;
                 double n_e = rho*Ne_unit;
-                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
-                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double theta_e = Thetae_unit*kel*pow(rho,game-1.);
                 double B_mag = B_mag_code*B_unit;
                 double dt_cgs = dt*T_unit;
+                double r_cgs = r * L_unit;
+                double L = 0.3*r_cgs;
 
                 //update the internal energy:
-                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+                double lambda = 1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e; // pure synchrotron cooling
+                double tau_c = 3.05567e-8*n_e*L/(B_mag*pow(theta_e, 5.0));
+                double F_of_tau = 1/(1+pow(tau_c/3.8e4, 0.4)); // optical depth correction
+                uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau);
 
                 //convert back to code units:
                 uel = uel/U_unit;
@@ -702,16 +720,25 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 double rho = P(m_p.RHO, k, j, i);
                 double uel = pow(rho, game)*kel/(game-1);
 
+                //For getting r: (stolen from another function, a lot of them do this)
+                GReal Xembed[GR_DIM];
+                G.coord_embed(0, j, i, Loci::center, Xembed);
+                GReal r = Xembed[1];
+
                 //now cgs for everything:
                 uel = uel*U_unit;
                 double n_e = rho*Ne_unit;
-                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
-                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double theta_e = Thetae_unit*kel*pow(rho,game-1.);
                 double B_mag = B_mag_code*B_unit;
                 double dt_cgs = dt*T_unit;
+                double r_cgs = r * L_unit;
+                double L = 0.3*r_cgs;
 
                 //update the internal energy:
-                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+                double lambda = 1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e; // pure synchrotron cooling
+                double tau_c = 3.05567e-8*n_e*L/(B_mag*pow(theta_e, 5.0));
+                double F_of_tau = 1/(1+pow(tau_c/3.8e4, 0.4)); // optical depth correction
+                uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau);
 
                 //convert back to code units:
                 uel = uel/U_unit;
@@ -731,16 +758,25 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 double rho = P(m_p.RHO, k, j, i);
                 double uel = pow(rho, game)*kel/(game-1);
 
+                //For getting r: (stolen from another function, a lot of them do this)
+                GReal Xembed[GR_DIM];
+                G.coord_embed(0, j, i, Loci::center, Xembed);
+                GReal r = Xembed[1];
+
                 //now cgs for everything:
                 uel = uel*U_unit;
                 double n_e = rho*Ne_unit;
-                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
-                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double theta_e = Thetae_unit*kel*pow(rho,game-1.);
                 double B_mag = B_mag_code*B_unit;
                 double dt_cgs = dt*T_unit;
+                double r_cgs = r * L_unit;
+                double L = 0.3*r_cgs;
 
                 //update the internal energy:
-                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+                double lambda = 1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e; // pure synchrotron cooling
+                double tau_c = 3.05567e-8*n_e*L/(B_mag*pow(theta_e, 5.0));
+                double F_of_tau = 1/(1+pow(tau_c/3.8e4, 0.4)); // optical depth correction
+                uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau);
 
                 //convert back to code units:
                 uel = uel/U_unit;
@@ -760,16 +796,25 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 double rho = P(m_p.RHO, k, j, i);
                 double uel = pow(rho, game)*kel/(game-1);
 
+                //For getting r: (stolen from another function, a lot of them do this)
+                GReal Xembed[GR_DIM];
+                G.coord_embed(0, j, i, Loci::center, Xembed);
+                GReal r = Xembed[1];
+
                 //now cgs for everything:
                 uel = uel*U_unit;
                 double n_e = rho*Ne_unit;
-                double Tel = (game-1.)*uel/(n_e*Kbol);//this is in Kelvin
-                double theta_e = Tel/5.92986e9; // therefore this is unitless
+                double theta_e = Thetae_unit*kel*pow(rho,game-1.);
                 double B_mag = B_mag_code*B_unit;
                 double dt_cgs = dt*T_unit;
+                double r_cgs = r * L_unit;
+                double L = 0.3*r_cgs;
 
                 //update the internal energy:
-                uel = uel*exp(-dt_cgs*0.5*1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e);
+                double lambda = 1.28567e-14*B_mag*B_mag*n_e*theta_e*theta_e; // pure synchrotron cooling
+                double tau_c = 3.05567e-8*n_e*L/(B_mag*pow(theta_e, 5.0));
+                double F_of_tau = 1/(1+pow(tau_c/3.8e4, 0.4));
+                uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau); // optical depth correction
 
                 //convert back to code units:
                 uel = uel/U_unit;
