@@ -9,20 +9,20 @@ problem_id = torus
 <parthenon/mesh>
 refinement = none
 numlevel = 1
-nx1 = 256
-nx2 = 128
-nx3 = 128
+nx1 = 192
+nx2 = 96
+nx3 = 96
 
 <parthenon/meshblock>
-nx1 = 128
-nx2 = 128
-nx3 = 64
+nx1 = 96
+nx2 = 96
+nx3 = 96
 
 <coordinates>
 base = spherical_ks
 transform = fmks
 r_out = 1000
-a = 0.9375
+a = 0.5
 hslope = 0.3
 mks_smooth = 0.5
 poly_xt = 0.82
@@ -30,32 +30,62 @@ poly_alpha = 14.0
 
 <parthenon/time>
 tlim = 10000.0
+nlim = 100
 
 <GRMHD>
-cfl = 0.7
+cfl = 0.9
 gamma = 1.666667
 reconstruction = weno5
 
 <driver>
 type = imex
 two_sync = true
+reconstruction = weno5
 
 <torus>
 rin = 20.0
 rmax = 41.0
 
 <perturbation>
-u_jitter = 0.1
+u_jitter = 0.04
 
 <b_field>
+solver = face_ct
+ct_scheme = sg07
 type = mad
 beta_min = 100.
 
 <floors>
+frame = drift
 rho_min_geom = 1e-6
 u_min_geom = 1e-8
-bsq_over_rho_max = 100
-u_over_rho_max = 2
+bsq_over_rho_max = 1e3
+bsq_over_u_max   = 1e4
+gamma_max = 32
+
+<fofc>
+on = true
+consistent_face_b = false
+
+
+#COOLING: I just added this part without any other initialization, 
+#I don't think <electrons> needs other initialization
+<electrons>
+on = true
+cooling = false
+heating = true
+howes = true
+kawazura = true
+werner = true
+rowan = true
+sharma = true
+M_bh = 6.5e9 #mass of M87* in solar masses
+M_unit = 7.849809584157433e27 #arbitrary
+M_unit_howes = 8e27
+M_unit_kawazura = 8e27
+M_unit_werner = 8e27
+M_unit_rowan = 8e27
+M_unit_sharma = 8e27
 
 <debug>
 verbose = 1
@@ -67,11 +97,17 @@ on = false
 ne = 1.e-4
 Tp = 10
 
+<inverter>
+type = kastaun
+fix_average_neighbors = false
+fix_atmosphere = true
+
 <parthenon/output0>
 file_type = hdf5
 dt = 5.0
 single_precision_output = true
-variables = prims.rho, prims.u, prims.uvec, prims.B, jcon, fflag, pflag
+variables = prims.rho, prims.u, prims.uvec, prims.B, jcon, divB, prims.Kel_Howes, prims.Kel_Kawazura, prims.Kel_Werner, prims.Kel_Rowan, prims.Kel_Sharma, &
+            coords.Xnative, coords.Xsph, coords.gcon, coords.gcov, coords.gdet, coords.lapse, coords.conn
 
 <parthenon/output1>
 file_type = rst

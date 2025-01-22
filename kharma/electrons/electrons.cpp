@@ -69,6 +69,17 @@ std::shared_ptr<KHARMAPackage> Initialize(ParameterInput *pin, std::shared_ptr<P
     params.Add("M_bh", M_bh);
     Real M_unit = pin->GetOrAddReal("electrons", "M_unit", pow(1.0,28));
     params.Add("M_unit", M_unit);
+    Real M_unit_howes = pin->GetOrAddReal("electrons", "M_unit_howes", pow(1.0,28));
+    params.Add("M_unit_howes", M_unit_howes);
+    Real M_unit_kawazura = pin->GetOrAddReal("electrons", "M_unit_kawazura", pow(1.0,28));
+    params.Add("M_unit_kawazura", M_unit_kawazura);
+    Real M_unit_werner = pin->GetOrAddReal("electrons", "M_unit_werner", pow(1.0,28));
+    params.Add("M_unit_werner", M_unit_werner);
+    Real M_unit_rowan = pin->GetOrAddReal("electrons", "M_unit_rowan", pow(1.0,28));
+    params.Add("M_unit_rowan", M_unit_rowan);
+    Real M_unit_sharma = pin->GetOrAddReal("electrons", "M_unit_sharma", pow(1.0,28));
+    params.Add("M_unit_sharma", M_unit_sharma);
+
     // Whether to enforce that dissipation be positive, i.e. increasing entropy
     // Probably more accurate to keep off.
     bool enforce_positive_dissipation = pin->GetOrAddBoolean("electrons", "enforce_positive_dissipation", false);
@@ -269,7 +280,7 @@ TaskStatus InitElectrons(std::shared_ptr<MeshBlockData<Real>>& rc, ParameterInpu
 
 void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse)
 {
-    printf("printing from inside MeshUtoP\n");
+    //printf("printing from inside MeshUtoP\n");
     auto pmb = md->GetBlockData(0)->GetBlockPointer();
 
     // No need for a "map" here, we just want everything that fits these
@@ -285,13 +296,13 @@ void MeshUtoP(MeshData<Real> *md, IndexDomain domain, bool coarse)
     IndexRange jb    = bounds.GetBoundsJ(domain);
     IndexRange kb    = bounds.GetBoundsK(domain);
     auto block = IndexRange{0, e_P.GetDim(5)-1};
-    printf("I bet the memory issue is about to happen\n");
+    //printf("I bet the memory issue is about to happen\n");
     pmb->par_for("UtoP_electrons", block.s, block.e, 0, e_P.GetDim(4)-1, kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA (const int &b, const int &p, const int &k, const int &j, const int &i) {
             e_P(b, p, k, j, i) = e_U(b, p, k, j, i) / rho_U(k, j, i);
         }
     );
-    printf("end of MeshUtoP\n");
+    //printf("end of MeshUtoP\n");
 }
 
 void BlockUtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
@@ -438,7 +449,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
 
                 const Real beta_pow = m::pow(beta, mbeta);
                 const Real qrat = 0.92 * (c2*c2 + beta_pow)/(c3*c3 + beta_pow) * m::exp(-1./beta) * m::sqrt(MP/ME * Trat);
-                const Real fel = 1./(1. + qrat);//*********************************************************************************change fel here?************************************************************
+                const Real fel = 1./(1. + qrat);
                 P_new(m_p.K_HOWES, k, j, i) = clip(P_new(m_p.K_HOWES, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_KAWAZURA >= 0) {
@@ -450,7 +461,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real beta = m::min(pres / bsq * 2, 1.e20);// If somebody enables electrons in a GRHD sim
 
                 const Real QiQe = 35. / (1. + m::pow(beta/15., -1.4) * m::exp(-0.1 / Trat));
-                const Real fel = 1./(1. + QiQe);//*********************************************************************************change fel here?************************************************************
+                const Real fel = 1./(1. + QiQe);
                 P_new(m_p.K_KAWAZURA, k, j, i) = clip(P_new(m_p.K_KAWAZURA, k, j, i) + fel * diss, kel_min, kel_max);
             }
             // TODO KAWAZURA 19/20/21 separately?
@@ -467,7 +478,10 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real beta = pres / bsq * 2;
                 const Real sigma = bsq / (P(m_p.RHO, k, j, i) + P(m_p.UU, k, j, i) + pg);
                 const Real betamax = 0.25 / sigma;
-                const Real fel = 0.5 * m::exp(-m::pow(1 - beta/betamax, 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
+                Real fel = 0.5 * m::exp(-m::pow(1 - beta/betamax, 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
+                if (beta > betamax){
+                    fel = 0.5; // sometimes, the beta in our simulations is outside of the range explored in the Rowan paper
+                }
                 P_new(m_p.K_ROWAN, k, j, i) = clip(P_new(m_p.K_ROWAN, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_SHARMA >= 0) {
@@ -609,6 +623,11 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
     const Real dt = pmb->packages.Get("Globals")->Param<Real>("dt_last");
     const Real M_bh = pmb->packages.Get("Electrons")->Param<Real>("M_bh");
     const Real M_unit = pmb->packages.Get("Electrons")->Param<Real>("M_unit");
+    const Real M_unit_howes = pmb->packages.Get("Electrons")->Param<Real>("M_unit_howes");
+    const Real M_unit_kawazura = pmb->packages.Get("Electrons")->Param<Real>("M_unit_kawazura");
+    const Real M_unit_werner = pmb->packages.Get("Electrons")->Param<Real>("M_unit_werner");
+    const Real M_unit_rowan = pmb->packages.Get("Electrons")->Param<Real>("M_unit_rowan");
+    const Real M_unit_sharma = pmb->packages.Get("Electrons")->Param<Real>("M_unit_sharma");
 
     //for the conversion stuff:
     //MP, ME are defined in the namespace parthenon (above)
@@ -624,6 +643,31 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
     double U_unit = RHO_unit*CL*CL;
     double B_unit = CL*sqrt(4.*M_PI*RHO_unit);
     double Ne_unit = RHO_unit/(MP + ME);
+
+    //yeah there's definetly a better way to do the rest of this function 
+    //I should probably use a Kokkos inline function 
+    //I'll probably fix this later but for now it's fine I think
+    double RHO_unit_h = M_unit_howes*pow(L_unit, -3.);
+    double U_unit_h = RHO_unit_h*CL*CL;
+    double B_unit_h = CL*sqrt(4.*M_PI*RHO_unit_h);
+    double Ne_unit_h = RHO_unit_h/(MP + ME);
+    double RHO_unit_k = M_unit_kawazura*pow(L_unit, -3.);
+    double U_unit_k = RHO_unit_k*CL*CL;
+    double B_unit_k = CL*sqrt(4.*M_PI*RHO_unit_k);
+    double Ne_unit_k = RHO_unit_k/(MP + ME);
+    double RHO_unit_w = M_unit_werner*pow(L_unit, -3.);
+    double U_unit_w = RHO_unit_w*CL*CL;
+    double B_unit_w = CL*sqrt(4.*M_PI*RHO_unit_w);
+    double Ne_unit_w = RHO_unit_w/(MP + ME);
+    double RHO_unit_r = M_unit_rowan*pow(L_unit, -3.);
+    double U_unit_r = RHO_unit_r*CL*CL;
+    double B_unit_r = CL*sqrt(4.*M_PI*RHO_unit_r);
+    double Ne_unit_r = RHO_unit_r/(MP + ME);
+    double RHO_unit_s = M_unit_sharma*pow(L_unit, -3.);
+    double U_unit_s = RHO_unit_s*CL*CL;
+    double B_unit_s = CL*sqrt(4.*M_PI*RHO_unit_s);
+    double Ne_unit_s = RHO_unit_s/(MP + ME);
+
     double Thetae_unit = MP/ME;
 
     const IndexRange ib = rc->GetBoundsI(IndexDomain::interior);
@@ -650,10 +694,10 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 GReal r = Xembed[1];
 
                 //now cgs for everything:
-                uel = uel*U_unit;
-                double n_e = rho*Ne_unit;
+                uel = uel*U_unit_h;
+                double n_e = rho*Ne_unit_h;
                 double theta_e = Thetae_unit*kel*pow(rho,game-1.);
-                double B_mag = B_mag_code*B_unit;
+                double B_mag = B_mag_code*B_unit_h;
                 double dt_cgs = dt*T_unit;
                 double r_cgs = r * L_unit;
                 double L = 0.3*r_cgs;
@@ -665,7 +709,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau); // optical depth correction
 
                 //convert back to code units:
-                uel = uel/U_unit;
+                uel = uel/U_unit_h;
 
                 //update the entropy:
                 P(m_p.K_HOWES, k, j, i) = uel/pow(rho, game)*(game-1);
@@ -688,10 +732,10 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 GReal r = Xembed[1];
 
                 //now cgs for everything:
-                uel = uel*U_unit;
-                double n_e = rho*Ne_unit;
+                uel = uel*U_unit_k;
+                double n_e = rho*Ne_unit_k;
                 double theta_e = Thetae_unit*kel*pow(rho,game-1.);
-                double B_mag = B_mag_code*B_unit;
+                double B_mag = B_mag_code*B_unit_k;
                 double dt_cgs = dt*T_unit;
                 double r_cgs = r * L_unit;
                 double L = 0.3*r_cgs;
@@ -703,7 +747,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau);
 
                 //convert back to code units:
-                uel = uel/U_unit;
+                uel = uel/U_unit_k;
 
                 //update the entropy:
                 P(m_p.K_KAWAZURA, k, j, i) = uel/pow(rho, game)*(game-1);
@@ -726,10 +770,10 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 GReal r = Xembed[1];
 
                 //now cgs for everything:
-                uel = uel*U_unit;
-                double n_e = rho*Ne_unit;
+                uel = uel*U_unit_r;
+                double n_e = rho*Ne_unit_r;
                 double theta_e = Thetae_unit*kel*pow(rho,game-1.);
-                double B_mag = B_mag_code*B_unit;
+                double B_mag = B_mag_code*B_unit_r;
                 double dt_cgs = dt*T_unit;
                 double r_cgs = r * L_unit;
                 double L = 0.3*r_cgs;
@@ -741,7 +785,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau);
 
                 //convert back to code units:
-                uel = uel/U_unit;
+                uel = uel/U_unit_r;
 
                 //update the entropy:
                 P(m_p.K_ROWAN, k, j, i) = uel/pow(rho, game)*(game-1);
@@ -764,10 +808,10 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 GReal r = Xembed[1];
 
                 //now cgs for everything:
-                uel = uel*U_unit;
-                double n_e = rho*Ne_unit;
+                uel = uel*U_unit_s;
+                double n_e = rho*Ne_unit_s;
                 double theta_e = Thetae_unit*kel*pow(rho,game-1.);
-                double B_mag = B_mag_code*B_unit;
+                double B_mag = B_mag_code*B_unit_s;
                 double dt_cgs = dt*T_unit;
                 double r_cgs = r * L_unit;
                 double L = 0.3*r_cgs;
@@ -779,7 +823,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau);
 
                 //convert back to code units:
-                uel = uel/U_unit;
+                uel = uel/U_unit_s;
 
                 //update the entropy:
                 P(m_p.K_SHARMA, k, j, i) = uel/pow(rho, game)*(game-1);
@@ -802,10 +846,10 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 GReal r = Xembed[1];
 
                 //now cgs for everything:
-                uel = uel*U_unit;
-                double n_e = rho*Ne_unit;
+                uel = uel*U_unit_w;
+                double n_e = rho*Ne_unit_w;
                 double theta_e = Thetae_unit*kel*pow(rho,game-1.);
-                double B_mag = B_mag_code*B_unit;
+                double B_mag = B_mag_code*B_unit_w;
                 double dt_cgs = dt*T_unit;
                 double r_cgs = r * L_unit;
                 double L = 0.3*r_cgs;
@@ -817,7 +861,7 @@ TaskStatus ApplyElectronCooling(MeshBlockData<Real> *rc){
                 uel = uel*exp(-dt_cgs*0.5*lambda*F_of_tau); // optical depth correction
 
                 //convert back to code units:
-                uel = uel/U_unit;
+                uel = uel/U_unit_w;
 
                 //update the entropy:
                 P(m_p.K_WERNER, k, j, i) = uel/pow(rho, game)*(game-1);
